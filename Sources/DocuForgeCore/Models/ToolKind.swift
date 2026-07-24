@@ -32,7 +32,7 @@ public enum ToolKind: String, CaseIterable, Identifiable, Sendable, Hashable {
 
     public var subtitle: String {
         switch self {
-        case .edit: return "PDFs, text & images"
+        case .edit: return "WYSIWYG canvas editor"
         case .convert: return "Formats & images"
         case .merge: return "Combine documents"
         case .split: return "Extract ranges"

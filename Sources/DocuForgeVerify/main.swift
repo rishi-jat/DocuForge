@@ -142,6 +142,13 @@ struct Verify {
         print("\nEdit mode checks:\n")
         await EditChecks.run(temp: temp, check: check)
 
+        print("\nCanvas WYSIWYG foundation checks:\n")
+        do {
+            try CanvasChecks.run(temp: temp, check: check)
+        } catch {
+            check("Canvas checks", false, error.localizedDescription)
+        }
+
         let failed = failures.count
         print("\n" + (failed == 0 ? "All checks passed." : "\(failed) check(s) failed."))
         if failed != 0 { exit(1) }
