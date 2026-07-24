@@ -8,6 +8,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "DocuForge", targets: ["DocuForge"]),
+        .executable(name: "DocuForgeVerify", targets: ["DocuForgeVerify"]),
         .library(name: "DocuForgeCore", targets: ["DocuForgeCore"])
     ],
     targets: [
@@ -19,6 +20,11 @@ let package = Package(
             name: "DocuForge",
             dependencies: ["DocuForgeCore"],
             path: "Sources/DocuForge"
+        ),
+        .executableTarget(
+            name: "DocuForgeVerify",
+            dependencies: ["DocuForgeCore"],
+            path: "Sources/DocuForgeVerify"
         )
     ]
 )
