@@ -38,6 +38,8 @@ struct PDFCanvasView: NSViewRepresentable {
         if pdfView.document !== session.document {
             pdfView.document = session.document
         }
+        // Only Select tool uses native PDF selection drag.
+        // All other tools intercept clicks for edit / annotate / screenshot.
         pdfView.activeToolIsSelect = { [session] in
             session.tool == .select
         }
@@ -50,6 +52,9 @@ struct PDFCanvasView: NSViewRepresentable {
            pdfView.currentPage != page {
             pdfView.go(to: page)
         }
+        // Force redraw when selection flash changes
+        _ = session.selectionFlashToken
+        pdfView.needsDisplay = true
     }
 
     static func dismantleNSView(_ nsView: ClickablePDFView, coordinator: Coordinator) {
@@ -98,5 +103,21 @@ final class ClickablePDFView: PDFView {
             return
         }
         super.mouseDown(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        let isSelect = activeToolIsSelect?() ?? true
+        if isSelect {
+            NSCursor.arrow.set()
+        } else {
+            NSCursor.iBeam.set()
+        }
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        let isSelect = activeToolIsSelect?() ?? true
+        addCursorRect(bounds, cursor: isSelect ? .arrow : .iBeam)
     }
 }

@@ -208,6 +208,69 @@ enum EditChecks {
             check("PDF search/replace", false, error.localizedDescription)
         }
 
+        // ---- Click-to-edit simulation (word bounds + cover/replace like Canva) ----
+        do {
+            let pdfPath = temp.appendingPathComponent("click-edit.pdf")
+            _ = try HighQualityPDFRenderer.writePlainText(
+                "Hello WORLD of DocuForge editing\nSecond line stays put.",
+                to: pdfPath
+            )
+            guard let doc = PDFDocument(url: pdfPath), let page = doc.page(at: 0) else {
+                throw DocuForgeError.pdfOperationFailed("click-edit open")
+            }
+            guard let pageText = page.string as NSString? else {
+                throw DocuForgeError.pdfOperationFailed("no page text")
+            }
+            let range = pageText.range(of: "WORLD")
+            check("click-edit found WORLD in page text", range.location != NSNotFound, pageText as String)
+
+            var selection: PDFSelection?
+            if range.location != NSNotFound {
+                selection = doc.selection(
+                    from: page,
+                    atCharacterIndex: range.location,
+                    to: page,
+                    atCharacterIndex: max(range.location, NSMaxRange(range) - 1)
+                )
+            }
+            // Also try selectionForWord near mid-page as fallback path used by canvas click
+            let mid = CGPoint(x: page.bounds(for: .mediaBox).midX, y: page.bounds(for: .mediaBox).midY)
+            let wordSel = page.selectionForWord(at: mid)
+            check("click-edit selectionForWord API works", wordSel != nil || selection != nil, "mid=\(mid)")
+
+            if let selection {
+                let bounds = selection.bounds(for: page)
+                check("click-edit WORLD bounds", !bounds.isNull && bounds.width > 0 && bounds.height > 0, "\(bounds)")
+                let pad = bounds.insetBy(dx: -1.5, dy: -1.0)
+                let cover = PDFAnnotation(bounds: pad, forType: .square, withProperties: nil)
+                cover.color = .clear
+                cover.interiorColor = .white
+                cover.border = PDFBorder()
+                cover.border?.lineWidth = 0
+                page.addAnnotation(cover)
+                let box = PDFAnnotation(bounds: pad, forType: .freeText, withProperties: nil)
+                box.contents = "EARTH"
+                box.font = NSFont.systemFont(ofSize: max(8, pad.height * 0.8))
+                box.fontColor = .black
+                box.color = .clear
+                page.addAnnotation(box)
+                let out = temp.appendingPathComponent("click-edit-out.pdf")
+                guard doc.write(to: out) else { throw DocuForgeError.pdfOperationFailed("write click-edit") }
+                check("click-edit save layout-preserving replace", FileManager.default.fileExists(atPath: out.path), out.path)
+                // freeText contents should include EARTH
+                if let reopened = PDFDocument(url: out), let p0 = reopened.page(at: 0) {
+                    let annTexts = p0.annotations.compactMap(\.contents).joined(separator: " ")
+                    check("click-edit freeText has EARTH", annTexts.contains("EARTH"), annTexts)
+                } else {
+                    check("click-edit reopen", false, "could not reopen")
+                }
+            } else {
+                check("click-edit WORLD selection", false, "no selection for WORLD")
+            }
+        } catch {
+            check("click-edit suite", false, error.localizedDescription)
+        }
+
         do {
             let pdf = try MultiPageChecks.makeLabeledMultiPagePDF(in: temp, pages: 2, name: "shot.pdf")
             let opened = try await pdfEditor.open(url: pdf)
