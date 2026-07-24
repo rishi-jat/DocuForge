@@ -3,54 +3,48 @@ import AppKit
 import PDFKit
 import DocuForgeCore
 
-/// Live PDF document session for on-canvas editing.
+/// Live PDF session — Pages/Canva-style: select text, edit in place, highlight selection.
 @MainActor
 final class LivePDFSession: ObservableObject {
+    /// Simplified tools — selection is always available for markup.
     enum Tool: String, CaseIterable, Identifiable {
-        case editText
-        case addText
+        case edit      // double-click / click word → inline edit
         case highlight
         case underline
         case strike
+        case addText
         case signature
-        case stamp
-        case screenshot
-        case select
+        case select   // pure select/copy
 
         var id: String { rawValue }
 
         var title: String {
             switch self {
-            case .editText: return "Edit word"
-            case .addText: return "Add text"
+            case .edit: return "Edit text"
             case .highlight: return "Highlight"
             case .underline: return "Underline"
             case .strike: return "Strike"
+            case .addText: return "Add text"
             case .signature: return "Sign"
-            case .stamp: return "Stamp"
-            case .screenshot: return "Page shot"
             case .select: return "Select"
             }
         }
 
         var systemImage: String {
             switch self {
-            case .editText: return "character.cursor.ibeam"
-            case .addText: return "text.badge.plus"
+            case .edit: return "character.cursor.ibeam"
             case .highlight: return "highlighter"
             case .underline: return "underline"
             case .strike: return "strikethrough"
+            case .addText: return "text.badge.plus"
             case .signature: return "signature"
-            case .stamp: return "seal"
-            case .screenshot: return "camera.viewfinder"
             case .select: return "cursorarrow"
             }
         }
 
-        /// Tools that use native drag-selection (then annotate on mouse up).
         var usesDragSelection: Bool {
             switch self {
-            case .select, .highlight, .underline, .strike: return true
+            case .highlight, .underline, .strike, .select, .edit: return true
             default: return false
             }
         }
@@ -66,7 +60,7 @@ final class LivePDFSession: ObservableObject {
 
         var markupColor: NSColor? {
             switch self {
-            case .highlight: return NSColor.systemYellow.withAlphaComponent(0.45)
+            case .highlight: return NSColor(calibratedRed: 1, green: 0.92, blue: 0.2, alpha: 1)
             case .underline: return .systemBlue
             case .strike: return .systemRed
             default: return nil
@@ -74,23 +68,21 @@ final class LivePDFSession: ObservableObject {
         }
     }
 
-    enum TextPickMode: String, CaseIterable, Identifiable {
-        case word, line
-        var id: String { rawValue }
-        var title: String { self == .word ? "Word" : "Line" }
-    }
-
     struct TextSelectionHit: Equatable {
         var pageIndex: Int
         var bounds: CGRect
         var originalText: String
         var fontSize: CGFloat
+        var isBold: Bool
     }
 
     let document: PDFDocument
     private(set) var sourceURL: URL
 
-    @Published var tool: Tool = .editText
+    /// App build stamp so users can confirm they launched the new binary.
+    static let buildLabel = "DocuForge Edit 2026.7.25"
+
+    @Published var tool: Tool = .edit
     @Published var currentPageIndex: Int = 0
     @Published var isDirty: Bool = false
     @Published var status: String = ""
@@ -99,30 +91,25 @@ final class LivePDFSession: ObservableObject {
     @Published var caseSensitive: Bool = false
     @Published var matchCount: Int = 0
     @Published var findIndex: Int = 0
-    @Published var textBoxDraft: String = "New text"
-    @Published var stampDraft: String = "APPROVED"
+    @Published var textBoxDraft: String = ""
     @Published var pageImageForEdit: NSImage?
     @Published var showPageImageEditor: Bool = false
     @Published var showScreenshotTextEditor: Bool = false
-    @Published var textPickMode: TextPickMode = .word
     @Published var selectedHit: TextSelectionHit?
-    /// Intentionally NOT driving heavy view refresh on every keystroke — UI holds local draft.
-    var editDraft: String = ""
     @Published var selectionFlashToken: Int = 0
     @Published var canvasRevision: Int = 0
-    @Published var lastClickDebug: String = ""
     @Published var pageLines: [PDFTextEditEngine.PageLine] = []
-    @Published var showPageContentPanel: Bool = true
+    /// Inline editor should open (canvas positions the field).
+    @Published var inlineEditActive: Bool = false
+    @Published var inlineEditText: String = ""
 
     private(set) var findHits: [PDFTextEditEngine.Match] = []
-
-    private weak var selectionFlashAnnotation: PDFAnnotation?
-    private weak var selectionFlashPage: PDFPage?
 
     init(document: PDFDocument, sourceURL: URL) {
         self.document = document
         self.sourceURL = sourceURL
         refreshPageLines()
+        status = "\(Self.buildLabel). Double-click a word to edit (like Pages/Canva). Drag to highlight."
     }
 
     static func open(url: URL) throws -> LivePDFSession {
@@ -160,23 +147,17 @@ final class LivePDFSession: ObservableObject {
     // MARK: - Find / replace
 
     func refreshFind() {
-        findHits = PDFTextEditEngine.findMatches(
-            in: document,
-            query: findQuery,
-            caseSensitive: caseSensitive
-        )
+        findHits = PDFTextEditEngine.findMatches(in: document, query: findQuery, caseSensitive: caseSensitive)
         findIndex = 0
         matchCount = findHits.count
         if findQuery.isEmpty {
-            status = "Type a word in Find, then press Find."
+            status = "Type Find text, then Find."
         } else if matchCount == 0 {
-            if !currentPageHasTextLayer {
-                status = "No matches. This page may be a scan — use “Edit text in screenshot”."
-            } else {
-                status = "No matches for “\(findQuery)”."
-            }
+            status = currentPageHasTextLayer
+                ? "No matches for “\(findQuery)”."
+                : "No matches. Scan/image page? Use Edit text in screenshot."
         } else {
-            status = "\(matchCount) match\(matchCount == 1 ? "" : "es"). Next jumps; Replace All rewrites at the same size."
+            status = "\(matchCount) match(es). Replace All rewrites at matched size."
             if let first = findHits.first {
                 currentPageIndex = first.pageIndex
                 refreshPageLines()
@@ -199,9 +180,7 @@ final class LivePDFSession: ObservableObject {
             caseSensitive: caseSensitive
         )
         if n == 0 {
-            status = currentPageHasTextLayer
-                ? "Nothing to replace for “\(q)”."
-                : "Nothing replaced — no selectable PDF text. Use “Edit text in screenshot”."
+            status = "Nothing replaced for “\(q)”."
             matchCount = 0
             findHits = []
             bump()
@@ -210,44 +189,34 @@ final class LivePDFSession: ObservableObject {
         isDirty = true
         findHits = []
         matchCount = 0
-        clearTextSelection()
+        endInlineEdit(commit: false)
         refreshPageLines()
-        status = "Replaced \(n) occurrence(s) at matching size."
+        status = "Replaced \(n) match(es) at matched size. Save when ready. [\(Self.buildLabel)]"
         bump()
     }
 
     func goToNextMatch() {
         guard !findHits.isEmpty else {
             refreshFind()
-            guard !findHits.isEmpty else { return }
             return
         }
         findIndex = (findIndex + 1) % findHits.count
         let hit = findHits[findIndex]
         currentPageIndex = hit.pageIndex
         refreshPageLines()
-        if let page = document.page(at: hit.pageIndex) {
-            flashBounds(hit.bounds, on: page, color: NSColor.systemYellow.withAlphaComponent(0.45), seconds: 0.9)
-        }
         status = "Match \(findIndex + 1) of \(findHits.count)"
         bump()
     }
 
-    // MARK: - Click to edit
+    // MARK: - Inline edit (Pages/Canva: double-click text → type → done)
 
-    func selectTextAt(page: PDFPage, pointInPage: CGPoint) {
+    func beginInlineEdit(page: PDFPage, point: CGPoint) {
         let pageIndex = document.index(for: page)
         let idx = pageIndex == NSNotFound ? currentPageIndex : pageIndex
-        if pageIndex != NSNotFound {
-            currentPageIndex = pageIndex
-            refreshPageLines()
-        }
+        if pageIndex != NSNotFound { currentPageIndex = pageIndex }
 
-        lastClickDebug = String(format: "click page=%d pt=(%.1f,%.1f)", idx + 1, pointInPage.x, pointInPage.y)
-
-        if !PDFTextEditEngine.pageHasExtractableText(page) {
-            clearTextSelection()
-            status = "No text layer (scan/screenshot). Use “Edit text in screenshot” or the page content panel after OCR."
+        guard PDFTextEditEngine.pageHasExtractableText(page) else {
+            status = "No selectable text here. Use “Edit text in screenshot” for image pages."
             bump()
             return
         }
@@ -255,11 +224,10 @@ final class LivePDFSession: ObservableObject {
         guard let sel = PDFTextEditEngine.selectText(
             page: page,
             pageIndex: idx,
-            point: pointInPage,
-            preferLine: textPickMode == .line
+            point: point,
+            preferLine: false
         ) else {
-            clearTextSelection()
-            status = "No word under click. Use the Page content list on the right to edit lines."
+            status = "No word under cursor. Drag-select text, or use Page content list."
             bump()
             return
         }
@@ -268,162 +236,182 @@ final class LivePDFSession: ObservableObject {
             pageIndex: sel.pageIndex,
             bounds: sel.bounds,
             originalText: sel.text,
-            fontSize: sel.fontSize
+            fontSize: sel.fontSize,
+            isBold: sel.isBold
         )
-        editDraft = sel.text
+        inlineEditText = sel.text
+        inlineEditActive = true
         selectionFlashToken &+= 1
-        if let p = document.page(at: sel.pageIndex) {
-            flashSelection(on: p, bounds: sel.bounds)
-        }
-        status = "Selected “\(shortPreview(sel.text))”. Type in the blue bar (click the field), then Apply."
+        status = "Editing “\(short(sel.text))” — type new text, press Return or Done."
         bump()
     }
 
-    func applySelectedTextEdit(draft: String? = nil) {
+    func beginInlineEditFromSelection(_ pdfSelection: PDFSelection) {
+        guard let sel = PDFTextEditEngine.selectionFromPDFSelection(pdfSelection, document: document) else {
+            status = "Could not read selection."
+            bump()
+            return
+        }
+        selectedHit = TextSelectionHit(
+            pageIndex: sel.pageIndex,
+            bounds: sel.bounds,
+            originalText: sel.text,
+            fontSize: sel.fontSize,
+            isBold: sel.isBold
+        )
+        currentPageIndex = sel.pageIndex
+        inlineEditText = sel.text
+        inlineEditActive = true
+        selectionFlashToken &+= 1
+        status = "Editing selection “\(short(sel.text))”."
+        bump()
+    }
+
+    func commitInlineEdit() {
         guard let hit = selectedHit else {
-            status = "Click a word, or edit a line in Page content."
-            bump()
+            endInlineEdit(commit: false)
             return
         }
-        let newText = (draft ?? editDraft).trimmingCharacters(in: .whitespacesAndNewlines)
+        let newText = inlineEditText
         guard !newText.isEmpty else {
-            status = "Replacement text cannot be empty."
+            status = "Text cannot be empty."
             bump()
             return
         }
-        // Re-fetch page (burn replace swaps page objects)
         guard let page = document.page(at: hit.pageIndex) else {
-            status = "Page no longer available."
-            clearTextSelection()
+            endInlineEdit(commit: false)
             return
         }
-        clearFlash()
         let ok = PDFTextEditEngine.coverAndReplace(
             on: page,
             bounds: hit.bounds,
             newText: newText,
             originalText: hit.originalText
         )
-        guard ok else {
+        if ok {
+            isDirty = true
+            status = "Updated “\(short(hit.originalText))” → “\(short(newText))”."
+            refreshPageLines()
+        } else {
             status = "Could not apply edit."
-            bump()
+        }
+        endInlineEdit(commit: false)
+        bump()
+    }
+
+    func endInlineEdit(commit: Bool) {
+        if commit {
+            commitInlineEdit()
             return
         }
-        isDirty = true
-        let old = hit.originalText
-        clearTextSelection()
-        refreshPageLines()
-        status = "Changed “\(shortPreview(old))” → “\(shortPreview(newText))” (matched size)."
-        bump()
+        inlineEditActive = false
+        inlineEditText = ""
+        selectedHit = nil
+        objectWillChange.send()
     }
 
     func applyPageLineEdit(line: PDFTextEditEngine.PageLine, newText: String) {
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        guard let page = document.page(at: line.pageIndex) else { return }
-        clearFlash()
-        let ok = PDFTextEditEngine.coverAndReplace(
+        guard !trimmed.isEmpty, let page = document.page(at: line.pageIndex) else { return }
+        if PDFTextEditEngine.coverAndReplace(
             on: page,
             bounds: line.bounds,
             newText: trimmed,
             originalText: line.text
-        )
-        if ok {
+        ) {
             isDirty = true
             refreshPageLines()
-            status = "Updated line: “\(shortPreview(trimmed))”."
-            bump()
-        } else {
-            status = "Could not update that line."
+            status = "Updated line."
             bump()
         }
     }
 
-    func eraseSelectedText() {
-        guard let hit = selectedHit,
-              let page = document.page(at: hit.pageIndex) else {
-            status = "Select text first."
-            bump()
-            return
-        }
-        clearFlash()
-        // White cover via high-fidelity paint of blank
-        _ = PDFTextEditEngine.coverAndReplace(
-            on: page,
-            bounds: hit.bounds,
-            newText: " ",
-            originalText: hit.originalText
-        )
-        isDirty = true
-        clearTextSelection()
-        refreshPageLines()
-        status = "Erased selected text."
-        bump()
-    }
-
-    func clearTextSelection() {
-        clearFlash()
-        selectedHit = nil
-        editDraft = ""
-        // Don't always bump — callers bump when needed
-        objectWillChange.send()
-    }
-
-    // MARK: - Markup from drag selection (Pages/Canva style)
+    // MARK: - Markup on selection (Pages: select then highlight)
 
     func applyMarkupFromPDFSelection(_ selection: PDFSelection?) {
-        guard let selection, let subtype = tool.markupSubtype, let color = tool.markupColor else {
+        guard let selection, let subtype = tool.markupSubtype, let color = tool.markupColor else { return }
+        let text = selection.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else {
+            status = "Drag over the words you want to \(tool.title.lowercased())."
+            bump()
             return
         }
-        let text = selection.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let n = PDFTextEditEngine.applyMarkup(selection: selection, type: subtype, color: color)
         if n > 0 {
             isDirty = true
-            status = "\(tool.title): \(n) run(s)\(text.isEmpty ? "" : " on “\(shortPreview(text))”")."
+            status = "\(tool.title) applied to “\(short(text))”."
             bump()
         } else {
-            status = "Drag across text to \(tool.title.lowercased()), or click a word."
+            status = "Could not \(tool.title.lowercased()) that selection."
             bump()
         }
     }
 
-    // MARK: - Canvas click tools
-
-    func handleClick(page: PDFPage, pointInPage: CGPoint) {
-        let pageIndex = document.index(for: page)
-        if pageIndex != NSNotFound {
-            currentPageIndex = pageIndex
+    /// Toolbar action: highlight whatever is currently selected in the PDF view.
+    func applyMarkupToCurrentViewSelection(_ selection: PDFSelection?) {
+        guard let selection else {
+            status = "First drag-select text, then click Highlight."
+            bump()
+            return
         }
+        let text = selection.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else {
+            status = "First drag-select text, then click Highlight."
+            bump()
+            return
+        }
+        let n = PDFTextEditEngine.applyMarkup(
+            selection: selection,
+            type: .highlight,
+            color: NSColor(calibratedRed: 1, green: 0.92, blue: 0.2, alpha: 1)
+        )
+        if n > 0 {
+            isDirty = true
+            status = "Highlighted “\(short(text))”."
+            bump()
+        }
+    }
+
+    // MARK: - Clicks
+
+    func handleSingleClick(page: PDFPage, point: CGPoint) {
+        let pageIndex = document.index(for: page)
+        if pageIndex != NSNotFound { currentPageIndex = pageIndex }
 
         switch tool {
-        case .select:
-            break
-        case .editText:
-            selectTextAt(page: page, pointInPage: pointInPage)
-        case .addText:
-            addFreeText(page: page, at: pointInPage, text: textBoxDraft.isEmpty ? "Text" : textBoxDraft)
+        case .edit:
+            // Single click starts edit (Canva: click text object)
+            beginInlineEdit(page: page, point: point)
         case .highlight, .underline, .strike:
-            // Click = word markup; drag handled separately via selection
+            // Prefer drag; click still highlights one word
             guard let subtype = tool.markupSubtype, let color = tool.markupColor else { return }
             let idx = pageIndex == NSNotFound ? currentPageIndex : pageIndex
-            let result = PDFTextEditEngine.applyMarkupAtPoint(
-                page: page,
-                pageIndex: idx,
-                point: pointInPage,
-                type: subtype,
-                color: color,
-                preferLine: false
+            let r = PDFTextEditEngine.applyMarkupAtPoint(
+                page: page, pageIndex: idx, point: point, type: subtype, color: color
             )
-            if result.count > 0 {
+            if r.count > 0 {
                 isDirty = true
-                status = "\(tool.title) on “\(shortPreview(result.text ?? ""))”."
+                status = "\(tool.title): “\(short(r.text ?? ""))”."
                 bump()
             } else {
-                status = "No word under click — drag across the text to \(tool.title.lowercased())."
+                status = "Drag across words to \(tool.title.lowercased())."
+                bump()
+            }
+        case .addText:
+            // Only Add text tool places a new box — never by accident
+            let text = textBoxDraft.isEmpty ? "New text" : textBoxDraft
+            let fontSize: CGFloat = 14
+            let width = max(80, CGFloat(text.count) * fontSize * 0.55)
+            let rect = CGRect(x: point.x, y: point.y - fontSize, width: width, height: fontSize * 1.4)
+            if PDFTextEditEngine.coverAndReplace(on: page, bounds: rect, newText: text, originalText: text) {
+                // coverAndReplace on empty area still paints white+text — good
+                isDirty = true
+                status = "Added “\(short(text))”. Switch to Edit text to change existing words."
+                refreshPageLines()
                 bump()
             }
         case .signature:
-            let rect = CGRect(x: pointInPage.x - 80, y: pointInPage.y - 20, width: 160, height: 40)
+            let rect = CGRect(x: point.x - 80, y: point.y - 20, width: 160, height: 40)
             let ann = PDFAnnotation(bounds: rect, forType: .ink, withProperties: nil)
             ann.color = .black
             let path = NSBezierPath()
@@ -432,34 +420,24 @@ final class LivePDFSession: ObservableObject {
             ann.add(path)
             page.addAnnotation(ann)
             isDirty = true
-            status = "Added signature."
+            status = "Signature added."
             bump()
-        case .stamp:
-            let text = stampDraft.isEmpty ? "APPROVED" : stampDraft
-            let width = max(100, CGFloat(text.count) * 10)
-            let rect = CGRect(x: pointInPage.x - width / 2, y: pointInPage.y - 16, width: width, height: 32)
-            let box = PDFAnnotation(bounds: rect, forType: .freeText, withProperties: nil)
-            box.contents = text
-            box.font = NSFont.boldSystemFont(ofSize: 14)
-            box.fontColor = .systemRed
-            box.color = NSColor.white.withAlphaComponent(0.2)
-            box.alignment = .center
-            page.addAnnotation(box)
-            isDirty = true
-            status = "Stamped “\(text)”."
-            bump()
-        case .screenshot:
-            beginEditPageAsImage()
+        case .select:
+            break
         }
     }
 
-    // MARK: - Screenshots
+    func handleDoubleClick(page: PDFPage, point: CGPoint) {
+        beginInlineEdit(page: page, point: point)
+    }
+
+    // MARK: - Screenshots / pages
 
     func beginEditPageAsImage() {
         guard let page = document.page(at: currentPageIndex) else { return }
         pageImageForEdit = render(page: page, dpi: 144)
         showPageImageEditor = true
-        status = "Page image adjust open."
+        status = "Page image adjust."
         bump()
     }
 
@@ -467,19 +445,13 @@ final class LivePDFSession: ObservableObject {
         guard let page = document.page(at: currentPageIndex) else { return }
         pageImageForEdit = render(page: page, dpi: 180)
         showScreenshotTextEditor = true
-        status = "Screenshot text editor — detect & rewrite words in the page image."
+        status = "Screenshot OCR editor."
         bump()
     }
 
     func applyEditedPageImage(_ image: NSImage) {
-        guard let newPage = PDFPage(image: image) else {
-            status = "Could not create page from image."
-            bump()
-            return
-        }
-        if let old = document.page(at: currentPageIndex) {
-            newPage.rotation = old.rotation
-        }
+        guard let newPage = PDFPage(image: image) else { return }
+        if let old = document.page(at: currentPageIndex) { newPage.rotation = old.rotation }
         document.removePage(at: currentPageIndex)
         document.insert(newPage, at: currentPageIndex)
         isDirty = true
@@ -487,44 +459,22 @@ final class LivePDFSession: ObservableObject {
         showScreenshotTextEditor = false
         pageImageForEdit = nil
         refreshPageLines()
-        status = "Page \(currentPageIndex + 1) updated. Document remains PDF."
+        status = "Page \(currentPageIndex + 1) updated."
         bump()
     }
 
     func pasteScreenshotReplacingPage() {
-        guard let image = NSImage(pasteboard: .general) ?? pasteboardImage() else {
-            status = "Clipboard has no image. Capture with ⌘⇧4, copy, then paste."
-            bump()
-            return
-        }
-        applyEditedPageImage(image)
-        status = "Replaced page \(currentPageIndex + 1) with clipboard screenshot."
-        bump()
-    }
-
-    func pasteScreenshotAsNewPage() {
-        guard let image = NSImage(pasteboard: .general) ?? pasteboardImage() else {
+        guard let image = NSImage(pasteboard: .general) else {
             status = "Clipboard has no image."
             bump()
             return
         }
-        guard let newPage = PDFPage(image: image) else { return }
-        let at = min(currentPageIndex + 1, document.pageCount)
-        document.insert(newPage, at: at)
-        currentPageIndex = at
-        isDirty = true
-        refreshPageLines()
-        status = "Inserted screenshot as page \(at + 1)."
-        bump()
+        applyEditedPageImage(image)
     }
 
     func insertBlankPage() {
-        let size: CGSize
-        if let page = document.page(at: currentPageIndex) {
-            size = page.bounds(for: .mediaBox).size
-        } else {
-            size = CGSize(width: 612, height: 792)
-        }
+        let size = document.page(at: currentPageIndex)?.bounds(for: .mediaBox).size
+            ?? CGSize(width: 612, height: 792)
         let blank = PDFPage()
         blank.setBounds(CGRect(origin: .zero, size: size), for: .mediaBox)
         let at = min(currentPageIndex + 1, document.pageCount)
@@ -532,7 +482,7 @@ final class LivePDFSession: ObservableObject {
         currentPageIndex = at
         isDirty = true
         refreshPageLines()
-        status = "Inserted blank page \(at + 1)."
+        status = "Blank page inserted."
         bump()
     }
 
@@ -541,7 +491,7 @@ final class LivePDFSession: ObservableObject {
         page.rotation = (page.rotation + degrees) % 360
         if page.rotation < 0 { page.rotation += 360 }
         isDirty = true
-        status = "Rotated page \(currentPageIndex + 1)."
+        status = "Rotated."
         bump()
     }
 
@@ -552,17 +502,13 @@ final class LivePDFSession: ObservableObject {
             return
         }
         document.removePage(at: currentPageIndex)
-        if currentPageIndex >= document.pageCount {
-            currentPageIndex = document.pageCount - 1
-        }
+        if currentPageIndex >= document.pageCount { currentPageIndex = document.pageCount - 1 }
         isDirty = true
-        clearTextSelection()
+        endInlineEdit(commit: false)
         refreshPageLines()
-        status = "Deleted page."
+        status = "Page deleted."
         bump()
     }
-
-    // MARK: - Save
 
     @discardableResult
     func save(to url: URL? = nil) throws -> URL {
@@ -579,70 +525,19 @@ final class LivePDFSession: ObservableObject {
         try? FileManager.default.removeItem(at: temp)
         sourceURL = target
         isDirty = false
-        status = "Saved \(target.lastPathComponent) — format remains PDF."
+        status = "Saved \(target.lastPathComponent)."
         bump()
         return target
     }
 
-    // MARK: - Helpers
-
-    private func addFreeText(page: PDFPage, at point: CGPoint, text: String) {
-        let size = CGSize(width: max(160, CGFloat(text.count) * 8), height: 28)
-        let rect = CGRect(x: point.x, y: point.y - size.height / 2, width: size.width, height: size.height)
-        let ann = PDFAnnotation(bounds: rect, forType: .freeText, withProperties: nil)
-        ann.contents = text
-        ann.font = NSFont.systemFont(ofSize: 14)
-        ann.fontColor = .black
-        ann.color = NSColor.white.withAlphaComponent(0.01)
-        page.addAnnotation(ann)
-        isDirty = true
-        status = "Added text box “\(shortPreview(text))”."
-        bump()
-    }
-
-    private func flashSelection(on page: PDFPage, bounds: CGRect) {
-        clearFlash()
-        let flash = PDFAnnotation(bounds: bounds.insetBy(dx: -2, dy: -2), forType: .highlight, withProperties: nil)
-        flash.color = NSColor.systemBlue.withAlphaComponent(0.35)
-        page.addAnnotation(flash)
-        selectionFlashAnnotation = flash
-        selectionFlashPage = page
-    }
-
-    private func flashBounds(_ bounds: CGRect, on page: PDFPage, color: NSColor, seconds: TimeInterval) {
-        let flash = PDFAnnotation(bounds: bounds, forType: .highlight, withProperties: nil)
-        flash.color = color
-        page.addAnnotation(flash)
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
-            page.removeAnnotation(flash)
-        }
-    }
-
-    private func clearFlash() {
-        if let page = selectionFlashPage, let ann = selectionFlashAnnotation {
-            page.removeAnnotation(ann)
-        }
-        selectionFlashAnnotation = nil
-        selectionFlashPage = nil
-    }
-
-    private func shortPreview(_ s: String) -> String {
+    private func short(_ s: String) -> String {
         let t = s.replacingOccurrences(of: "\n", with: " ")
-        if t.count <= 40 { return t }
-        return String(t.prefix(37)) + "…"
+        return t.count <= 36 ? t : String(t.prefix(33)) + "…"
     }
 
     private func bump() {
         canvasRevision &+= 1
         objectWillChange.send()
-    }
-
-    private func pasteboardImage() -> NSImage? {
-        let pb = NSPasteboard.general
-        if let data = pb.data(forType: .png) ?? pb.data(forType: .tiff) {
-            return NSImage(data: data)
-        }
-        return nil
     }
 
     private func render(page: PDFPage, dpi: CGFloat) -> NSImage {

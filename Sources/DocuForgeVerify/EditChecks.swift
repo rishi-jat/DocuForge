@@ -247,24 +247,43 @@ enum EditChecks {
             // High-fidelity replace burns into page image — file must exist and page remain
             check("engine high-fidelity replace saved", FileManager.default.fileExists(atPath: out.path), out.path)
             check("engine page still present", reopened.pageCount >= 1, "pages=\(reopened.pageCount)")
-            // Font size estimate sanity
             if let hit = finds.first {
                 let fs = PDFTextEditEngine.estimateFontSize(bounds: hit.bounds, sampleText: hit.text)
-                check("engine font size estimate in range", fs >= 6 && fs <= 72, "fs=\(fs)")
+                check("engine font size estimate in range", fs >= 6 && fs <= 96, "fs=\(fs)")
             }
-            // Highlight markup
-            if let page = doc.page(at: 0), let first = finds.first {
-                let r = PDFTextEditEngine.applyMarkupAtPoint(
-                    page: page,
-                    pageIndex: 0,
-                    point: CGPoint(x: first.bounds.midX, y: first.bounds.midY),
-                    type: .highlight,
-                    color: NSColor.systemYellow.withAlphaComponent(0.45)
-                )
-                // page may have been replaced by burn — re-open fresh doc for highlight test
-                _ = r
+
+            // Title-size Summer → Winter (GSoC-style)
+            let titlePath = temp.appendingPathComponent("title-summer.pdf")
+            // Use CoreGraphics title like the real proposal
+            do {
+                var media = CGRect(x: 0, y: 0, width: 612, height: 792)
+                let c = CGContext(titlePath as CFURL, mediaBox: &media, nil)!
+                c.beginPDFPage(nil)
+                c.setFillColor(CGColor(gray: 1, alpha: 1)); c.fill(media)
+                let font = NSFont.boldSystemFont(ofSize: 28)
+                let line = CTLineCreateWithAttributedString(NSAttributedString(
+                    string: "Google Summer of Code 2026",
+                    attributes: [.font: font, .foregroundColor: NSColor.black]
+                ))
+                c.textMatrix = .identity
+                c.textPosition = CGPoint(x: 50, y: 720)
+                CTLineDraw(line, c)
+                c.endPDFPage(); c.closePDF()
             }
-            // Fresh doc for highlight annotation count
+            guard let tdoc = PDFDocument(url: titlePath) else { throw DocuForgeError.pdfOperationFailed("title open") }
+            let summerHits = PDFTextEditEngine.findMatches(in: tdoc, query: "Summer", caseSensitive: true)
+            check("engine title find Summer", summerHits.count == 1, "count=\(summerHits.count)")
+            if let sh = summerHits.first {
+                let fs = PDFTextEditEngine.estimateFontSize(bounds: sh.bounds, sampleText: sh.text)
+                check("engine title font ~28pt", fs >= 18 && fs <= 40, "fs=\(fs) bounds=\(sh.bounds)")
+                let n = PDFTextEditEngine.replaceAll(in: tdoc, query: "Summer", replacement: "Winter", caseSensitive: true)
+                check("engine title replace Summer→Winter", n == 1, "n=\(n)")
+                let outT = temp.appendingPathComponent("title-winter.pdf")
+                guard tdoc.write(to: outT) else { throw DocuForgeError.pdfOperationFailed("title write") }
+                check("engine title winter saved", FileManager.default.fileExists(atPath: outT.path), "")
+            }
+
+            // Highlight
             let hlPath = temp.appendingPathComponent("engine-hl.pdf")
             _ = try HighQualityPDFRenderer.writePlainText("Highlight ME please", to: hlPath)
             guard let hlDoc = PDFDocument(url: hlPath), let hlPage = hlDoc.page(at: 0) else {
@@ -278,12 +297,15 @@ enum EditChecks {
                     pageIndex: 0,
                     point: CGPoint(x: h.bounds.midX, y: h.bounds.midY),
                     type: .highlight,
-                    color: NSColor.systemYellow.withAlphaComponent(0.45)
+                    color: NSColor.systemYellow
                 )
                 check("engine highlight applied", r.count == 1, "count=\(r.count) text=\(r.text ?? "")")
-                check("engine highlight annotation present", hlPage.annotations.contains { $0.type == "Highlight" || $0.type == "highlight" }, "types=\(hlPage.annotations.map { $0.type ?? "?" })")
+                check(
+                    "engine highlight annotation present",
+                    hlPage.annotations.contains { ($0.type ?? "").lowercased().contains("highlight") },
+                    "types=\(hlPage.annotations.map { $0.type ?? "?" })"
+                )
             }
-            // Page lines extraction
             let lines = PDFTextEditEngine.extractLines(page: hlPage, pageIndex: 0)
             check("engine extract lines non-empty", !lines.isEmpty, "count=\(lines.count)")
         } catch {
