@@ -3,20 +3,47 @@ import DocuForgeCore
 
 @main
 struct DocuForgeApp: App {
+    @StateObject private var appModel = AppModel()
+
     var body: some Scene {
         WindowGroup {
-            VStack(spacing: 12) {
-                Image(systemName: "doc.badge.gearshape")
-                    .font(.system(size: 48))
-                    .symbolRenderingMode(.hierarchical)
-                Text("DocuForge")
-                    .font(.largeTitle.weight(.bold))
-                Text("Domain models ready · \(ToolKind.allCases.count) tools planned")
-                    .foregroundStyle(.secondary)
-            }
-            .frame(minWidth: 480, minHeight: 320)
-            .padding()
+            ContentView()
+                .environmentObject(appModel)
+                .frame(minWidth: 980, minHeight: 640)
         }
-        .defaultSize(width: 720, height: 480)
+        .windowStyle(.automatic)
+        .defaultSize(width: 1180, height: 760)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+            CommandMenu("Tools") {
+                ForEach(ToolKind.allCases) { tool in
+                    Button(tool.title) {
+                        appModel.selectedTool = tool
+                    }
+                    .keyboardShortcut(tool.shortcutKey, modifiers: [.command, .shift])
+                }
+            }
+        }
+
+        Settings {
+            SettingsView()
+                .environmentObject(appModel)
+        }
+    }
+}
+
+private extension ToolKind {
+    var shortcutKey: KeyEquivalent {
+        switch self {
+        case .convert: return "c"
+        case .merge: return "m"
+        case .split: return "s"
+        case .compress: return "z"
+        case .ocr: return "o"
+        case .protect: return "p"
+        case .watermark: return "w"
+        case .pages: return "g"
+        case .batch: return "b"
+        }
     }
 }
