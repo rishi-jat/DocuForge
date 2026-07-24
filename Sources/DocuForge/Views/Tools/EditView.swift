@@ -4,36 +4,13 @@ import UniformTypeIdentifiers
 import PDFKit
 import DocuForgeCore
 
-/// Production editor workspace: open a file and change its content like a document app —
-/// find/replace, pages, annotations, screenshots — with clear save-back behavior.
+/// Production editor workspace with stable, full-height layout.
 struct EditView: View {
     @EnvironmentObject private var app: AppModel
 
     enum Mode: String {
         case none, pdf, text, image
     }
-
-    @State private var mode: Mode = .none
-    @State private var sourceURL: URL?
-    @State private var statusMessage = ""
-    @State private var errorMessage = ""
-    @State private var isBusy = false
-
-    // Find & replace (shared)
-    @State private var findText = ""
-    @State private var replaceText = ""
-    @State private var caseSensitive = false
-    @State private var matchCount = 0
-
-    // PDF
-    @State private var pdfSessionID: UUID?
-    @State private var pdfSnapshot: PDFEditorService.SessionSnapshot?
-    @State private var selectedPage = 0
-    @State private var pageOrder: [Int] = []
-    @State private var freeTextContent = "Type here…"
-    @State private var watermarkText = "CONFIDENTIAL"
-    @State private var previewImages: [Int: NSImage] = [:]
-    @State private var pdfTab: PDFTab = .content
 
     enum PDFTab: String, CaseIterable, Identifiable {
         case content = "Content"
@@ -43,12 +20,30 @@ struct EditView: View {
         var id: String { rawValue }
     }
 
-    // Text
+    @State private var mode: Mode = .none
+    @State private var sourceURL: URL?
+    @State private var statusMessage = ""
+    @State private var errorMessage = ""
+    @State private var isBusy = false
+
+    @State private var findText = ""
+    @State private var replaceText = ""
+    @State private var caseSensitive = false
+    @State private var matchCount = 0
+
+    @State private var pdfSessionID: UUID?
+    @State private var pdfSnapshot: PDFEditorService.SessionSnapshot?
+    @State private var selectedPage = 0
+    @State private var pageOrder: [Int] = []
+    @State private var freeTextContent = "Type here…"
+    @State private var watermarkText = "CONFIDENTIAL"
+    @State private var previewImages: [Int: NSImage] = [:]
+    @State private var pdfTab: PDFTab = .content
+
     @State private var textDocument: TextEditorService.TextDocument?
     @State private var textBody = ""
     @State private var textDirty = false
 
-    // Image / screenshot
     @State private var imageOriginal: NSImage?
     @State private var imageWorking: NSImage?
     @State private var imageFormat: DocumentFormat = .png
@@ -64,29 +59,33 @@ struct EditView: View {
     var body: some View {
         VStack(spacing: 0) {
             topBar
+            statusBanner
             Divider()
-            if mode == .none {
+
+            switch mode {
+            case .none:
                 emptyState
-            } else {
-                if mode == .text || mode == .pdf {
+            case .text:
+                VStack(spacing: 0) {
                     findReplaceBar
                     Divider()
+                    textWorkspace
                 }
-                Group {
-                    switch mode {
-                    case .pdf: pdfWorkspace
-                    case .text: textWorkspace
-                    case .image: imageWorkspace
-                    case .none: EmptyView()
-                    }
+            case .pdf:
+                VStack(spacing: 0) {
+                    findReplaceBar
+                    Divider()
+                    pdfWorkspace
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .image:
+                imageWorkspace
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    // MARK: - Chrome
+    // MARK: - Top chrome
 
     private var topBar: some View {
         HStack(spacing: 12) {
@@ -94,22 +93,30 @@ struct EditView: View {
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(.white)
                 .frame(width: 36, height: 36)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor))
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.accentColor))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Edit")
                     .font(.title2.weight(.bold))
-                Text(mode == .none ? "Open a document and change its content — text, pages, or screenshots." : fileSubtitle)
+                Text(mode == .none
+                     ? "Open a document and change its content — text, pages, or screenshots."
+                     : fileSubtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            Spacer()
+            Spacer(minLength: 12)
+
+            if isBusy {
+                ProgressView()
+                    .controlSize(.small)
+            }
 
             if mode != .none {
-                if isBusy { ProgressView().controlSize(.small) }
                 Button("Close") { closeSession() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Save As…") { Task { await saveAs() } }
                     .disabled(isBusy)
                 Button("Save") { Task { await save() } }
@@ -125,25 +132,37 @@ struct EditView: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-        .background(.bar)
-        .overlay(alignment: .bottom) {
-            if !statusMessage.isEmpty || !errorMessage.isEmpty {
-                HStack {
-                    if !statusMessage.isEmpty {
-                        Label(statusMessage, systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    }
-                    if !errorMessage.isEmpty {
-                        Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
-                    }
-                    Spacer()
+        .padding(.vertical, 12)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    @ViewBuilder
+    private var statusBanner: some View {
+        if !statusMessage.isEmpty || !errorMessage.isEmpty {
+            HStack(alignment: .top, spacing: 10) {
+                if !statusMessage.isEmpty {
+                    Label(statusMessage, systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
                 }
-                .font(.caption)
-                .padding(.horizontal, 20)
-                .padding(.bottom, 6)
+                if !errorMessage.isEmpty {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                }
+                Spacer(minLength: 0)
+                Button {
+                    statusMessage = ""
+                    errorMessage = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
+            .font(.caption)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(errorMessage.isEmpty ? Color.green.opacity(0.08) : Color.red.opacity(0.08))
         }
     }
 
@@ -166,28 +185,33 @@ struct EditView: View {
         }
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 20) {
-            DropZoneView(
-                title: "Drop a file to start editing",
-                subtitle: "PDF · Word · Pages · PowerPoint · Keynote · text · screenshots & images",
-                systemImage: "doc.badge.plus",
-                allowedTypes: [.item],
-                allowsMultiple: false
-            ) { urls in
-                if let url = urls.first { Task { await open(url) } }
-            }
-            .frame(maxWidth: 640)
+    // MARK: - Empty
 
-            HStack(spacing: 16) {
-                featureCard("Find & replace", "Change every occurrence of a word in one step", "magnifyingglass")
-                featureCard("Keep layout", "Office/iWork conversions prefer Apple apps so slides don’t break", "rectangle.3.group")
-                featureCard("Screenshots", "Paste or edit screenshots inside PDFs and image files", "camera.viewfinder")
+    private var emptyState: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                DropZoneView(
+                    title: "Drop a file to start editing",
+                    subtitle: "PDF · Word · Pages · PowerPoint · Keynote · text · screenshots & images",
+                    systemImage: "doc.badge.plus",
+                    allowedTypes: [.item],
+                    allowsMultiple: false
+                ) { urls in
+                    if let url = urls.first { Task { await open(url) } }
+                }
+                .frame(maxWidth: 640)
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    featureCard("Find & replace", "Change every occurrence of a word in one step", "magnifyingglass")
+                    featureCard("Keep layout", "Convert with Pages/Keynote when installed so slides don’t break", "rectangle.3.group")
+                    featureCard("Screenshots", "Paste or edit screenshots inside PDFs and image files", "camera.viewfinder")
+                }
+                .frame(maxWidth: 900)
             }
-            .frame(maxWidth: 900)
+            .padding(28)
+            .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(28)
     }
 
     private func featureCard(_ title: String, _ body: String, _ icon: String) -> some View {
@@ -200,84 +224,101 @@ struct EditView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+        .frame(maxWidth: .infinity, minHeight: 90, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
     }
 
-    // MARK: - Find & replace bar
+    // MARK: - Find & replace
 
     private var findReplaceBar: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("Find", text: $findText)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 200)
-                .onChange(of: findText) { _, _ in Task { await refreshMatchCount() } }
-            TextField("Replace with", text: $replaceText)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 200)
-            Toggle("Aa", isOn: $caseSensitive)
-                .toggleStyle(.button)
-                .help("Case sensitive")
-                .onChange(of: caseSensitive) { _, _ in Task { await refreshMatchCount() } }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Find", text: $findText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 120, maxWidth: 220)
+                    .onChange(of: findText) { _, _ in Task { await refreshMatchCount() } }
 
-            Text(matchCount == 0 ? "No matches" : "\(matchCount) match\(matchCount == 1 ? "" : "es")")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 80, alignment: .leading)
+                TextField("Replace with", text: $replaceText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 120, maxWidth: 220)
 
-            Button("Replace All") { Task { await replaceAll() } }
-                .buttonStyle(.borderedProminent)
-                .disabled(findText.isEmpty || isBusy || matchCount == 0)
-                .keyboardShortcut("r", modifiers: [.command, .option])
+                Toggle("Aa", isOn: $caseSensitive)
+                    .toggleStyle(.button)
+                    .help("Case sensitive")
+                    .onChange(of: caseSensitive) { _, _ in Task { await refreshMatchCount() } }
 
-            Spacer()
+                Text(matchLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 72, alignment: .leading)
+
+                Button("Replace All") { Task { await replaceAll() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(findText.isEmpty || isBusy || matchCount == 0)
+                    .keyboardShortcut("r", modifiers: [.command, .option])
+
+                Spacer(minLength: 0)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
 
-    // MARK: - Text workspace
+    private var matchLabel: String {
+        if findText.isEmpty { return "" }
+        return matchCount == 0 ? "No matches" : "\(matchCount) match\(matchCount == 1 ? "" : "es")"
+    }
+
+    // MARK: - Text
 
     private var textWorkspace: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(spacing: 0) {
             if let note = textDocument?.limitationNote {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "info.circle.fill")
                     Text(note)
                         .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.orange.opacity(0.08))
+                .background(Color.orange.opacity(0.1))
             }
+
             TextEditor(text: $textBody)
                 .font(.system(size: 14))
                 .padding(8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .onChange(of: textBody) { _, _ in
                     textDirty = true
                     Task { await refreshMatchCount() }
                 }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: - PDF workspace
+    // MARK: - PDF
 
     private var pdfWorkspace: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $pdfTab) {
+            Picker("PDF tools", selection: $pdfTab) {
                 ForEach(PDFTab.allCases) { tab in
                     Text(tab.rawValue).tag(tab)
                 }
             }
             .pickerStyle(.segmented)
-            .padding(12)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
 
-            HStack(alignment: .top, spacing: 0) {
+            HStack(spacing: 0) {
                 // Page strip
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -287,54 +328,51 @@ struct EditView: View {
                     }
                     .padding(10)
                 }
-                .frame(width: 150)
-                .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                .frame(width: 148)
+                .frame(maxHeight: .infinity)
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.45))
 
                 Divider()
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         switch pdfTab {
-                        case .content:
-                            pdfContentPanel
-                        case .pages:
-                            pdfPagesPanel
-                        case .annotate:
-                            pdfAnnotatePanel
-                        case .screenshots:
-                            pdfScreenshotPanel
+                        case .content: pdfContentPanel
+                        case .pages: pdfPagesPanel
+                        case .annotate: pdfAnnotatePanel
+                        case .screenshots: pdfScreenshotPanel
                         }
                     }
                     .padding(20)
-                    .frame(maxWidth: 720, alignment: .leading)
+                    .frame(maxWidth: 760, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var pdfContentPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Edit written content")
                 .font(.headline)
-            Text("Use Find & Replace above to change a word everywhere it appears. This rebuilds text pages so wording stays correct; decorative layout may differ from Canva/Pages designers.")
+            Text("Use Find & Replace above to change a word everywhere it appears. Text pages are rebuilt so wording stays correct; decorative layout may change for design-heavy PDFs.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            Label("Tip: For design-heavy slides, convert PPTX → PDF with Keynote first (Convert tool), then annotate here.", systemImage: "lightbulb")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-            GroupBox("Selected page") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Page \(selectedPage + 1) of \(pageOrder.count)")
+            GroupBox("Selected page \(selectedPage + 1) of \(max(pageOrder.count, 1))") {
+                VStack(alignment: .leading, spacing: 10) {
+                    TextField("Text box content", text: $freeTextContent)
+                        .textFieldStyle(.roundedBorder)
                     HStack {
                         Button("Add text box") { Task { await addFreeText() } }
                         Button("Highlight band") { Task { await addHighlight() } }
                     }
-                    TextField("Text box content", text: $freeTextContent)
-                        .textFieldStyle(.roundedBorder)
                 }
-                .padding(6)
+                .padding(8)
             }
         }
     }
@@ -371,6 +409,7 @@ struct EditView: View {
             }
             HStack {
                 TextField("Watermark text", text: $watermarkText)
+                    .textFieldStyle(.roundedBorder)
                 Button("Watermark all pages") { Task { await addWatermark() } }
             }
             Button("Clear annotations on this page", role: .destructive) {
@@ -383,11 +422,12 @@ struct EditView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Screenshots in this file")
                 .font(.headline)
-            Text("Paste a screenshot from the clipboard, or replace the current page with an edited image. Great for redacting UI captures inside a PDF.")
+            Text("Paste a screenshot from the clipboard, or replace the current page with an edited image.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-            HStack {
+            VStack(alignment: .leading, spacing: 8) {
                 Button {
                     Task { await pasteScreenshotAsPage() }
                 } label: {
@@ -400,18 +440,18 @@ struct EditView: View {
                 } label: {
                     Label("Replace page with clipboard", systemImage: "photo.on.rectangle.angled")
                 }
-            }
 
-            Button {
-                Task { await exportPageForEditing() }
-            } label: {
-                Label("Export this page as PNG…", systemImage: "square.and.arrow.up")
-            }
+                Button {
+                    Task { await exportPageForEditing() }
+                } label: {
+                    Label("Export this page as PNG…", systemImage: "square.and.arrow.up")
+                }
 
-            Button {
-                Task { await insertImageFile() }
-            } label: {
-                Label("Insert image file as page…", systemImage: "photo.badge.plus")
+                Button {
+                    Task { await insertImageFile() }
+                } label: {
+                    Label("Insert image file as page…", systemImage: "photo.badge.plus")
+                }
             }
         }
     }
@@ -420,85 +460,116 @@ struct EditView: View {
         let selected = selectedPage == displayIndex
         return VStack(spacing: 4) {
             ZStack {
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(Color(nsColor: .windowBackgroundColor))
-                    .frame(height: 110)
+                    .frame(width: 112, height: 140)
                 if let img = previewImages[sourceIndex] {
                     Image(nsImage: img)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
-                        .frame(height: 100)
+                        .frame(width: 100, height: 128)
                 } else {
                     ProgressView().controlSize(.mini)
                 }
             }
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(selected ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: selected ? 2 : 1))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(selected ? Color.accentColor : Color.primary.opacity(0.1), lineWidth: selected ? 2 : 1)
+            )
             Text("\(displayIndex + 1)")
                 .font(.caption2)
         }
+        .contentShape(Rectangle())
         .onTapGesture { selectedPage = displayIndex }
         .onAppear { Task { await loadPreview(sourceIndex: sourceIndex) } }
     }
 
-    // MARK: - Image workspace
+    // MARK: - Image
 
     private var imageWorkspace: some View {
-        HStack(alignment: .top, spacing: 20) {
-            VStack {
-                if let imageWorking {
-                    Image(nsImage: imageWorking)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: 520, maxHeight: 480)
-                        .background(CheckerboardBackground())
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-                HStack {
-                    Button {
-                        Task { await pasteIntoImageEditor() }
-                    } label: {
-                        Label("Paste screenshot", systemImage: "doc.on.clipboard")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Button("Reset") { resetImage() }
-                }
+        GeometryReader { geo in
+            let sideBySide = geo.size.width > 760
+            let stack = sideBySide
+                ? AnyView(HStack(alignment: .top, spacing: 20) { imagePreviewPane; imageControlsPane })
+                : AnyView(VStack(alignment: .leading, spacing: 16) { imagePreviewPane; imageControlsPane })
+            ScrollView {
+                stack
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            .padding(16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 
-            VStack(alignment: .leading, spacing: 14) {
-                if let imageLimitation {
-                    Text(imageLimitation).font(.caption).foregroundStyle(.secondary)
+    private var imagePreviewPane: some View {
+        VStack(spacing: 12) {
+            if let imageWorking {
+                Image(nsImage: imageWorking)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 520, maxHeight: 420)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+            } else {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .frame(height: 240)
+                    .overlay(Text("No image").foregroundStyle(.secondary))
+            }
+            HStack {
+                Button {
+                    Task { await pasteIntoImageEditor() }
+                } label: {
+                    Label("Paste screenshot", systemImage: "doc.on.clipboard")
                 }
-                GroupBox("Adjust") {
-                    VStack(spacing: 8) {
-                        sliderRow("Brightness", $brightness, -0.5...0.5)
-                        sliderRow("Contrast", $contrast, 0.5...1.5)
-                        sliderRow("Saturation", $saturation, 0...2)
-                    }
-                    .padding(6)
-                }
-                GroupBox("Size & crop") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Toggle("Crop 10% margins", isOn: $cropEnabled)
-                        HStack {
-                            TextField("W", value: $resizeWidth, format: .number).frame(width: 80)
-                            Text("×")
-                            TextField("H", value: $resizeHeight, format: .number).frame(width: 80)
-                        }
-                        Button("Apply edits") { Task { await applyImageEdits() } }
-                            .buttonStyle(.borderedProminent)
-                    }
-                    .padding(6)
-                }
-                Text("Save writes back to \(imageFormat.displayName) when supported.")
+                .buttonStyle(.borderedProminent)
+                Button("Reset") { resetImage() }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var imageControlsPane: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let imageLimitation {
+                Text(imageLimitation)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(width: 280)
-            .padding(.trailing, 16)
-            .padding(.top, 16)
-            Spacer()
+            GroupBox("Adjust") {
+                VStack(spacing: 8) {
+                    sliderRow("Brightness", $brightness, -0.5...0.5)
+                    sliderRow("Contrast", $contrast, 0.5...1.5)
+                    sliderRow("Saturation", $saturation, 0...2)
+                }
+                .padding(8)
+            }
+            GroupBox("Size & crop") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Crop 10% margins", isOn: $cropEnabled)
+                    HStack {
+                        TextField("W", value: $resizeWidth, format: .number)
+                            .frame(width: 80)
+                            .textFieldStyle(.roundedBorder)
+                        Text("×")
+                        TextField("H", value: $resizeHeight, format: .number)
+                            .frame(width: 80)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Button("Apply edits") { Task { await applyImageEdits() } }
+                        .buttonStyle(.borderedProminent)
+                }
+                .padding(8)
+            }
+            Text("Save writes back to \(imageFormat.displayName) when supported.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
+        .frame(minWidth: 260, maxWidth: 320, alignment: .leading)
     }
 
     private func sliderRow(_ title: String, _ value: Binding<Double>, _ range: ClosedRange<Double>) -> some View {
@@ -508,7 +579,7 @@ struct EditView: View {
         }
     }
 
-    // MARK: - Open / save
+    // MARK: - Open / save / actions (logic)
 
     private func open(_ url: URL) async {
         errorMessage = ""; statusMessage = ""; isBusy = true
@@ -552,7 +623,6 @@ struct EditView: View {
                 statusMessage = "Opened \(doc.format.displayName). Find & Replace All works across the whole file."
                 await refreshMatchCount()
             } else if format.isIWork || format.isOfficeOpenXML || format.isLegacyOffice || format.isOpenDocument {
-                // Guide user: convert with fidelity first, then edit PDF
                 errorMessage = "\(format.displayName) is best opened via Convert → PDF (uses Pages/Keynote when available so layout stays intact), then edit that PDF here. Or convert to DOCX/TXT to edit wording with Find & Replace."
             } else {
                 errorMessage = "No direct editor for \(format.displayName). Convert to PDF, TXT, or an image first."
@@ -643,21 +713,15 @@ struct EditView: View {
         }
     }
 
-    // MARK: - Find / replace
-
     private func refreshMatchCount() async {
         guard !findText.isEmpty else { matchCount = 0; return }
         switch mode {
         case .text:
-            matchCount = await app.textEditor.countMatches(
-                text: textBody, search: findText, caseSensitive: caseSensitive
-            )
+            matchCount = await app.textEditor.countMatches(text: textBody, search: findText, caseSensitive: caseSensitive)
         case .pdf:
             guard let id = pdfSessionID else { matchCount = 0; return }
             do {
-                matchCount = try await app.pdfEditor.countTextMatches(
-                    id: id, search: findText, caseSensitive: caseSensitive
-                )
+                matchCount = try await app.pdfEditor.countTextMatches(id: id, search: findText, caseSensitive: caseSensitive)
             } catch { matchCount = 0 }
         default:
             matchCount = 0
@@ -675,9 +739,7 @@ struct EditView: View {
                 textBody = result.output
                 textDirty = result.replacedCount > 0
                 matchCount = 0
-                statusMessage = result.replacedCount == 0
-                    ? "No matches."
-                    : "Replaced \(result.replacedCount) occurrence(s)."
+                statusMessage = result.replacedCount == 0 ? "No matches." : "Replaced \(result.replacedCount) occurrence(s)."
             case .pdf:
                 guard let id = pdfSessionID else { return }
                 let result = try await app.pdfEditor.replaceAllText(
@@ -686,15 +748,12 @@ struct EditView: View {
                 matchCount = 0
                 statusMessage = result.notes.joined(separator: " ")
                 await refreshPDFSnapshot()
-            default:
-                break
+            default: break
             }
         } catch {
             errorMessage = error.localizedDescription
         }
     }
-
-    // MARK: - PDF actions (same as before, condensed)
 
     private func refreshPDFSnapshot() async {
         guard let id = pdfSessionID else { return }
@@ -704,7 +763,7 @@ struct EditView: View {
             pageOrder = Array(0..<snap.pageCount)
             previewImages = [:]
             if selectedPage >= snap.pageCount { selectedPage = max(0, snap.pageCount - 1) }
-            for i in pageOrder.prefix(12) { await loadPreview(sourceIndex: i) }
+            for i in pageOrder.prefix(16) { await loadPreview(sourceIndex: i) }
             await refreshMatchCount()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -868,7 +927,7 @@ struct EditView: View {
             let out = dir.appendingPathComponent("page-\(selectedPage + 1).png")
             try data.write(to: out)
             app.recordOutputs([out])
-            statusMessage = "Exported page PNG — open in Edit as an image, then Replace page with clipboard."
+            statusMessage = "Exported page PNG — edit it, copy, then Replace page with clipboard."
             app.revealInFinder(out)
         } catch { errorMessage = error.localizedDescription }
     }
@@ -883,8 +942,6 @@ struct EditView: View {
             statusMessage = "Inserted image page."
         } catch { errorMessage = error.localizedDescription }
     }
-
-    // MARK: - Image actions
 
     private func pasteIntoImageEditor() async {
         guard let image = await app.imageEditor.clipboardImage() else {
@@ -930,29 +987,5 @@ struct EditView: View {
         }
         imageDirty = false
         statusMessage = "Reset."
-    }
-}
-
-/// Subtle checkerboard behind transparent images.
-private struct CheckerboardBackground: View {
-    var body: some View {
-        Canvas { context, size in
-            let s: CGFloat = 10
-            var y: CGFloat = 0
-            var row = 0
-            while y < size.height {
-                var x: CGFloat = 0
-                var col = 0
-                while x < size.width {
-                    let light = (row + col) % 2 == 0
-                    context.fill(
-                        Path(CGRect(x: x, y: y, width: s, height: s)),
-                        with: .color(light ? Color.gray.opacity(0.15) : Color.gray.opacity(0.28))
-                    )
-                    x += s; col += 1
-                }
-                y += s; row += 1
-            }
-        }
     }
 }

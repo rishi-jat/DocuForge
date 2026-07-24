@@ -7,13 +7,14 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView(selection: $app.selectedTool)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 300)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
         } detail: {
             detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: 640, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
                 .background(Color(nsColor: .windowBackgroundColor))
         }
         .navigationTitle(app.selectedTool.title)
+        .navigationSplitViewStyle(.balanced)
     }
 
     @ViewBuilder

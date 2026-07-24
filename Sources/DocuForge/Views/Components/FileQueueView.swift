@@ -13,8 +13,9 @@ struct FileQueueView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 80)
             } else {
-                List {
-                    ForEach(items) { item in
+                // Avoid List-in-ScrollView layout collapse on macOS.
+                VStack(spacing: 0) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         HStack(spacing: 12) {
                             Image(systemName: icon(for: item.format))
                                 .foregroundStyle(.secondary)
@@ -34,7 +35,25 @@ struct FileQueueView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             }
-                            Spacer()
+                            Spacer(minLength: 0)
+                            if index > 0 {
+                                Button {
+                                    items.swapAt(index, index - 1)
+                                } label: {
+                                    Image(systemName: "arrow.up")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Move up")
+                            }
+                            if index < items.count - 1 {
+                                Button {
+                                    items.swapAt(index, index + 1)
+                                } label: {
+                                    Image(systemName: "arrow.down")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Move down")
+                            }
                             Button(role: .destructive) {
                                 items.removeAll { $0.id == item.id }
                             } label: {
@@ -43,13 +62,14 @@ struct FileQueueView: View {
                             }
                             .buttonStyle(.plain)
                         }
-                        .padding(.vertical, 2)
-                    }
-                    .onMove { indices, newOffset in
-                        items.move(fromOffsets: indices, toOffset: newOffset)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        if index < items.count - 1 {
+                            Divider().padding(.leading, 36)
+                        }
                     }
                 }
-                .listStyle(.inset)
+                .padding(.vertical, 4)
             }
         }
         .background(

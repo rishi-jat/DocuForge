@@ -96,20 +96,13 @@ struct ConvertView: View {
                         Text("Convert to")
                             .font(.headline)
                         Picker("Convert to", selection: $target) {
-                            ForEach(DocumentFormat.pickerTargetsByCategory, id: \.0) { cat, formats in
-                                let visible = formats.filter { targets.contains($0) }
-                                if !visible.isEmpty {
-                                    Section(cat.title) {
-                                        ForEach(visible) { format in
-                                            Text(formatLabel(format)).tag(format)
-                                        }
-                                    }
-                                }
+                            ForEach(targets) { format in
+                                Text(formatLabel(format)).tag(format)
                             }
                         }
                         .labelsHidden()
                         .pickerStyle(.menu)
-                        .frame(maxWidth: 420)
+                        .frame(maxWidth: 420, minHeight: 28)
 
                         // Quick chips for popular targets including iWork
                         ScrollView(.horizontal, showsIndicators: false) {

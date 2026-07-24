@@ -33,7 +33,7 @@ struct ToolChrome<Controls: View, Content: View>: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
 
                 content()
@@ -41,9 +41,10 @@ struct ToolChrome<Controls: View, Content: View>: View {
                 controls()
             }
             .padding(28)
-            .frame(maxWidth: 920, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: 960, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -67,6 +68,7 @@ struct JobStatusBanner: View {
                 ProgressView(value: progress)
             }
             .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
         case .succeeded(let urls):
             VStack(alignment: .leading, spacing: 10) {
@@ -89,6 +91,7 @@ struct JobStatusBanner: View {
                 }
             }
             .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.green.opacity(0.08)))
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
