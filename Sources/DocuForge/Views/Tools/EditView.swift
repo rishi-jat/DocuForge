@@ -58,14 +58,6 @@ struct EditView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Text("DocuForge UI · Build UI-VERIFY-233406 · if you see this, you have the new build")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.black)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.yellow)
-                .accessibilityLabel("DocuForge UI build banner")
-
             topBar
             statusBanner
             Divider()
@@ -201,10 +193,6 @@ struct EditView: View {
     private var emptyState: some View {
         ScrollView {
             VStack(spacing: 24) {
-                Text("Build UI-VERIFY-233406")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(Color.accentColor)
-
                 DropZoneView(
                     title: "Drop a file to start editing",
                     subtitle: "PDF · Word · Pages · PowerPoint · Keynote · text · screenshots & images",

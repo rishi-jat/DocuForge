@@ -15,17 +15,6 @@ struct ToolChrome<Content: View, Controls: View>: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // Unmissable build banner so we can confirm the binary
-                Text("DocuForge UI · Build UI-VERIFY-233406 · if you see this, you have the new build")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.black)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.yellow)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .accessibilityLabel("DocuForge UI build banner")
-                    .accessibilityIdentifier("docuforge-build-banner")
-
                 // Header
                 HStack(alignment: .center, spacing: 14) {
                     ZStack {
