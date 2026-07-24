@@ -61,6 +61,13 @@ final class DocuForgeTests: XCTestCase {
         XCTAssertEqual(DocumentFormat.detect(url: URL(fileURLWithPath: "/tmp/a.PDF")), .pdf)
         XCTAssertEqual(DocumentFormat.detect(url: URL(fileURLWithPath: "/tmp/a.jpeg")), .jpeg)
         XCTAssertEqual(DocumentFormat.detect(url: URL(fileURLWithPath: "/tmp/a.docx")), .docx)
+        XCTAssertEqual(DocumentFormat.detect(url: URL(fileURLWithPath: "/tmp/a.doc")), .doc)
+        XCTAssertEqual(DocumentFormat.detect(url: URL(fileURLWithPath: "/tmp/a.epub")), .epub)
+        XCTAssertEqual(DocumentFormat.detect(url: URL(fileURLWithPath: "/tmp/a.md")), .markdown)
+        XCTAssertEqual(DocumentFormat.detect(url: URL(fileURLWithPath: "/tmp/a.svg")), .svg)
+        XCTAssertEqual(DocumentFormat.detect(url: URL(fileURLWithPath: "/tmp/a.odt")), .odt)
+        XCTAssertEqual(DocumentFormat.detect(url: URL(fileURLWithPath: "/tmp/a.pptx")), .pptx)
+        XCTAssertEqual(DocumentFormat.detect(url: URL(fileURLWithPath: "/tmp/a.zip")), .zip)
     }
 
     func testPageRangeParser() throws {

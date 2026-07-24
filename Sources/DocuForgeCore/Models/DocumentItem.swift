@@ -204,6 +204,8 @@ public enum BatchOperation: String, CaseIterable, Identifiable, Sendable {
     case pdfToPNG
     case removePassword // not without password — we skip; placeholder
     case convertImagesToJPEG
+    case extractArchive
+    case markdownToPDF
 
     public var id: String { rawValue }
 
@@ -215,6 +217,8 @@ public enum BatchOperation: String, CaseIterable, Identifiable, Sendable {
         case .pdfToPNG: return "PDF → PNG"
         case .removePassword: return "Unlock (needs password)"
         case .convertImagesToJPEG: return "Images → JPEG"
+        case .extractArchive: return "Extract archives"
+        case .markdownToPDF: return "Markdown → PDF"
         }
     }
 }

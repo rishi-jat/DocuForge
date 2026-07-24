@@ -24,7 +24,10 @@ let package = Package(
         .executableTarget(
             name: "DocuForgeVerify",
             dependencies: ["DocuForgeCore"],
-            path: "Sources/DocuForgeVerify"
+            path: "Sources/DocuForgeVerify",
+            swiftSettings: [
+                .unsafeFlags(["-parse-as-library"])
+            ]
         ),
         .testTarget(
             name: "DocuForgeTests",

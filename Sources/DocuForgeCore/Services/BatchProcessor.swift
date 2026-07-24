@@ -38,6 +38,8 @@ public actor BatchProcessor {
         case .pdfToPNG: dirName = "Batch-PDFToPNG"
         case .removePassword: dirName = "Batch-Unlock"
         case .convertImagesToJPEG: dirName = "Batch-JPEG"
+        case .extractArchive: dirName = "Batch-Extract"
+        case .markdownToPDF: dirName = "Batch-MarkdownPDF"
         }
 
         let outputDirectory: URL
@@ -111,6 +113,20 @@ public actor BatchProcessor {
             guard format.isImage else { throw DocuForgeError.invalidInput("Not an image: \(url.lastPathComponent)") }
             let out = outputDirectory.appendingPathComponent("\(base).jpg")
             let r = try await images.convert(url: url, to: .jpeg, outputURL: out)
+            return r.outputURLs
+
+        case .extractArchive:
+            guard format.isArchive else { throw DocuForgeError.invalidInput("Not an archive: \(url.lastPathComponent)") }
+            let sub = outputDirectory.appendingPathComponent(base, isDirectory: true)
+            let archives = ArchiveService()
+            let r = try await archives.extract(url: url, format: format, outputDirectory: sub)
+            return r.outputURLs
+
+        case .markdownToPDF:
+            guard format == .markdown || format == .txt else {
+                throw DocuForgeError.invalidInput("Not markdown/text: \(url.lastPathComponent)")
+            }
+            let r = try await conversion.convert(url: url, to: .pdf, outputDirectory: outputDirectory)
             return r.outputURLs
         }
     }
