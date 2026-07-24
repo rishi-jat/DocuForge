@@ -2,7 +2,7 @@ import SwiftUI
 import PDFKit
 import AppKit
 
-/// Native PDFKit canvas. Clicks are mapped to page coordinates for tools.
+/// Native PDFKit canvas with tool-aware click / drag.
 struct PDFCanvasView: NSViewRepresentable {
     @ObservedObject var session: LivePDFSession
 
@@ -20,6 +20,7 @@ struct PDFCanvasView: NSViewRepresentable {
         view.delegate = context.coordinator
         view.minScaleFactor = 0.25
         view.maxScaleFactor = 4.0
+        // Do NOT steal first responder — that blocks typing in the edit bar.
         context.coordinator.pdfView = view
         context.coordinator.apply(session: session, to: view)
 
@@ -39,14 +40,18 @@ struct PDFCanvasView: NSViewRepresentable {
         }
         context.coordinator.apply(session: session, to: pdfView)
 
-        if let page = session.document.page(at: session.currentPageIndex),
-           pdfView.currentPage != page {
-            pdfView.go(to: page)
+        // Only navigate when page index changes — avoid stealing focus every keystroke
+        if context.coordinator.lastPageIndex != session.currentPageIndex {
+            context.coordinator.lastPageIndex = session.currentPageIndex
+            if let page = session.document.page(at: session.currentPageIndex) {
+                pdfView.go(to: page)
+            }
         }
 
-        _ = session.canvasRevision
-        _ = session.selectionFlashToken
-        pdfView.needsDisplay = true
+        if context.coordinator.lastCanvasRevision != session.canvasRevision {
+            context.coordinator.lastCanvasRevision = session.canvasRevision
+            pdfView.needsDisplay = true
+        }
     }
 
     static func dismantleNSView(_ nsView: ClickablePDFView, coordinator: Coordinator) {
@@ -57,18 +62,28 @@ struct PDFCanvasView: NSViewRepresentable {
     final class Coordinator: NSObject, PDFViewDelegate {
         var session: LivePDFSession
         weak var pdfView: ClickablePDFView?
+        var lastPageIndex: Int = -1
+        var lastCanvasRevision: Int = -1
 
         init(session: LivePDFSession) {
             self.session = session
         }
 
         func apply(session: LivePDFSession, to view: ClickablePDFView) {
-            // Copy tool into a nonisolated flag so mouseDown (AppKit) can read it safely.
-            view.selectModeEnabled = (session.tool == .select)
+            let tool = session.tool
+            view.dragSelectMode = tool.usesDragSelection
+            view.isMarkupTool = (tool.markupSubtype != nil)
             view.onPageClick = { [weak self] page, point in
-                // mouseDown is on the main thread; hop explicitly for Swift 6 isolation.
                 Task { @MainActor in
                     self?.session.handleClick(page: page, pointInPage: point)
+                }
+            }
+            view.onDragSelectionFinished = { [weak self] selection in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if self.session.tool.markupSubtype != nil {
+                        self.session.applyMarkupFromPDFSelection(selection)
+                    }
                 }
             }
         }
@@ -82,41 +97,39 @@ struct PDFCanvasView: NSViewRepresentable {
                 let idx = doc.index(for: page)
                 if idx != NSNotFound, self.session.currentPageIndex != idx {
                     self.session.currentPageIndex = idx
+                    self.session.refreshPageLines()
+                    self.lastPageIndex = idx
                 }
             }
         }
     }
 }
 
-/// PDFView that always receives clicks for non-select tools.
+/// PDFView: click tools vs drag-select markup tools.
 final class ClickablePDFView: PDFView {
-    /// Set from MainActor update cycle.
-    nonisolated(unsafe) var selectModeEnabled: Bool = false
+    nonisolated(unsafe) var dragSelectMode: Bool = false
+    nonisolated(unsafe) var isMarkupTool: Bool = false
     nonisolated(unsafe) var onPageClick: ((PDFPage, CGPoint) -> Void)?
+    nonisolated(unsafe) var onDragSelectionFinished: ((PDFSelection?) -> Void)?
+
+    private var mouseDownPoint: NSPoint?
+    private var didDrag = false
 
     override var acceptsFirstResponder: Bool { true }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        window?.makeFirstResponder(self)
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        if selectModeEnabled {
-            return super.hitTest(point)
-        }
-        return bounds.contains(point) ? self : super.hitTest(point)
-    }
+    // Never force first responder — TextField must keep focus for typing.
 
     override func mouseDown(with event: NSEvent) {
-        if selectModeEnabled {
+        mouseDownPoint = convert(event.locationInWindow, from: nil)
+        didDrag = false
+
+        if dragSelectMode {
+            // Native text selection drag (Select / Highlight / Underline / Strike)
             super.mouseDown(with: event)
             return
         }
 
-        let windowPoint = event.locationInWindow
-        let viewPoint = convert(windowPoint, from: nil)
-
+        let viewPoint = convert(event.locationInWindow, from: nil)
         guard let page = page(for: viewPoint, nearest: true) else {
             super.mouseDown(with: event)
             return
@@ -125,9 +138,33 @@ final class ClickablePDFView: PDFView {
         onPageClick?(page, pagePoint)
     }
 
+    override func mouseDragged(with event: NSEvent) {
+        if dragSelectMode {
+            didDrag = true
+            super.mouseDragged(with: event)
+            return
+        }
+        // click tools ignore drag
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if dragSelectMode {
+            super.mouseUp(with: event)
+            if isMarkupTool {
+                // Apply highlight/underline/strike to the dragged selection
+                onDragSelectionFinished?(currentSelection)
+            }
+            mouseDownPoint = nil
+            didDrag = false
+            return
+        }
+        mouseDownPoint = nil
+        didDrag = false
+    }
+
     override func cursorUpdate(with event: NSEvent) {
-        if selectModeEnabled {
-            NSCursor.arrow.set()
+        if dragSelectMode {
+            NSCursor.iBeam.set()
         } else {
             NSCursor.crosshair.set()
         }
@@ -135,6 +172,6 @@ final class ClickablePDFView: PDFView {
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        addCursorRect(bounds, cursor: selectModeEnabled ? .arrow : .crosshair)
+        addCursorRect(bounds, cursor: dragSelectMode ? .iBeam : .crosshair)
     }
 }

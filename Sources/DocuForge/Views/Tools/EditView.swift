@@ -793,73 +793,104 @@ private struct PDFEditorWorkspace: View {
     var onOpenScreenshotText: () -> Void
     var onOpenPageImage: () -> Void
 
+    /// Local draft so typing does not fight PDFView focus / @Published churn.
+    @State private var localDraft: String = ""
+    @FocusState private var draftFocused: Bool
+    @State private var lineDrafts: [Int: String] = [:]
+
     var body: some View {
         VStack(spacing: 0) {
-            // Find / replace
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                TextField("Find", text: $session.findQuery)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 160)
-                TextField("Replace with", text: $session.replaceQuery)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 160)
-                Toggle("Aa", isOn: $session.caseSensitive)
-                    .toggleStyle(.button)
-                Button("Find") {
-                    session.refreshFind()
-                    statusMessage = session.status
-                }
-                Button("Next") {
-                    session.goToNextMatch()
-                    statusMessage = session.status
-                }
-                Button("Replace All") {
-                    session.replaceAllPreservingLayout()
-                    statusMessage = session.status
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(session.findQuery.isEmpty)
-
-                if session.matchCount > 0 {
-                    Text("\(session.matchCount) matches")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Button {
-                    onOpenScreenshotText()
-                } label: {
-                    Label("Edit text in screenshot", systemImage: "text.viewfinder")
-                }
-                .buttonStyle(.borderedProminent)
-                .help("Main feature: OCR + rewrite words on the page image (scans & screenshots).")
-
-                Button {
-                    session.pasteScreenshotReplacingPage()
-                    statusMessage = session.status
-                } label: {
-                    Label("Paste shot", systemImage: "doc.on.clipboard")
-                }
-
-                Button {
-                    onOpenPageImage()
-                } label: {
-                    Label("Adjust page", systemImage: "slider.horizontal.3")
-                }
+            findReplaceBar
+            toolStrip
+            editWordBar
+            HStack(spacing: 0) {
+                pageThumbs
+                Divider()
+                PDFCanvasView(session: session)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Divider()
+                pageContentPanel
             }
-            .padding(10)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.95))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            footer
+        }
+        .onChange(of: session.status) { _, new in statusMessage = new }
+        .onChange(of: session.selectedHit) { _, hit in
+            if let hit {
+                localDraft = hit.originalText
+                // Focus the field so the user can type immediately
+                DispatchQueue.main.async {
+                    draftFocused = true
+                }
+            } else {
+                localDraft = ""
+                draftFocused = false
+            }
+        }
+        .onChange(of: session.pageLines) { _, lines in
+            var map: [Int: String] = [:]
+            for line in lines { map[line.index] = line.text }
+            lineDrafts = map
+        }
+        .onAppear {
+            var map: [Int: String] = [:]
+            for line in session.pageLines { map[line.index] = line.text }
+            lineDrafts = map
+        }
+    }
 
-            // Tools
+    private var findReplaceBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+            TextField("Find", text: $session.findQuery)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 150)
+            TextField("Replace with", text: $session.replaceQuery)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 150)
+            Toggle("Aa", isOn: $session.caseSensitive).toggleStyle(.button)
+            Button("Find") {
+                session.refreshFind()
+                statusMessage = session.status
+            }
+            Button("Next") {
+                session.goToNextMatch()
+                statusMessage = session.status
+            }
+            Button("Replace All") {
+                session.replaceAllPreservingLayout()
+                statusMessage = session.status
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(session.findQuery.isEmpty)
+            if session.matchCount > 0 {
+                Text("\(session.matchCount) matches").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button(action: onOpenScreenshotText) {
+                Label("Edit text in screenshot", systemImage: "text.viewfinder")
+            }
+            .buttonStyle(.borderedProminent)
+            Button {
+                session.pasteScreenshotReplacingPage()
+                statusMessage = session.status
+            } label: {
+                Label("Paste shot", systemImage: "doc.on.clipboard")
+            }
+            Button(action: onOpenPageImage) {
+                Label("Adjust page", systemImage: "slider.horizontal.3")
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.95))
+    }
+
+    private var toolStrip: some View {
+        VStack(alignment: .leading, spacing: 6) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(LivePDFSession.Tool.allCases) { tool in
-                        Button {
-                            session.tool = tool
-                        } label: {
+                        Button { session.tool = tool } label: {
                             Label(tool.title, systemImage: tool.systemImage)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
@@ -876,15 +907,11 @@ private struct PDFEditorWorkspace: View {
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-
             HStack {
                 Text(toolHint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-
                 if session.tool == .editText {
                     Picker("Pick", selection: $session.textPickMode) {
                         ForEach(LivePDFSession.TextPickMode.allCases) { m in
@@ -904,129 +931,271 @@ private struct PDFEditorWorkspace: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 120)
                 }
-
                 if !session.currentPageHasTextLayer {
-                    Text("No text layer on page \(session.currentPageIndex + 1)")
+                    Text("No text layer — use screenshot editor")
                         .font(.caption2)
                         .padding(4)
                         .background(Color.orange.opacity(0.2))
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 6)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
 
-            // Selected word editor
-            if let hit = session.selectedHit {
-                HStack(spacing: 12) {
-                    Image(systemName: "character.cursor.ibeam")
-                        .foregroundStyle(Color.accentColor)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Editing page \(hit.pageIndex + 1)")
-                            .font(.caption.weight(.semibold))
-                        Text("Was: “\(hit.originalText)”")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                    TextField("New text", text: $session.editDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(minWidth: 180, maxWidth: 360)
-                        .onSubmit {
-                            session.applySelectedTextEdit()
-                            statusMessage = session.status
-                        }
-                    Button("Apply change") {
-                        session.applySelectedTextEdit()
-                        statusMessage = session.status
-                    }
+    @ViewBuilder
+    private var editWordBar: some View {
+        if session.selectedHit != nil {
+            HStack(spacing: 12) {
+                Image(systemName: "character.cursor.ibeam")
+                    .foregroundStyle(Color.accentColor)
+                    .font(.title3)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Edit selected text")
+                        .font(.caption.weight(.semibold))
+                    Text("Was: “\(session.selectedHit?.originalText ?? "")”")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                .frame(minWidth: 120, maxWidth: 220, alignment: .leading)
+
+                // AppKit text field — reliable keyboard focus on macOS
+                FocusableTextField(
+                    text: $localDraft,
+                    placeholder: "Type new text here",
+                    focusToken: session.selectionFlashToken,
+                    onSubmit: applyLocalDraft
+                )
+                .frame(minWidth: 220, maxWidth: 420, minHeight: 28)
+                .id(session.selectionFlashToken)
+
+                Button("Apply change") { applyLocalDraft() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.return, modifiers: .command)
-                    Button("Erase") {
-                        session.eraseSelectedText()
-                        statusMessage = session.status
-                    }
-                    Button("Cancel") {
-                        session.clearTextSelection()
-                    }
-                    Spacer()
+                Button("Erase") {
+                    session.eraseSelectedText()
+                    statusMessage = session.status
                 }
-                .padding(12)
-                .background(Color.accentColor.opacity(0.12))
-                .overlay(alignment: .top) { Rectangle().fill(Color.accentColor).frame(height: 2) }
+                Button("Cancel") {
+                    session.clearTextSelection()
+                    localDraft = ""
+                }
+                Spacer(minLength: 0)
             }
+            .padding(12)
+            .background(Color.accentColor.opacity(0.14))
+            .overlay(alignment: .top) { Rectangle().fill(Color.accentColor).frame(height: 3) }
+        }
+    }
 
-            HStack(spacing: 0) {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(0..<session.pageCount, id: \.self) { i in
-                            Button {
-                                session.goToPage(i)
-                            } label: {
-                                Text("\(i + 1)")
-                                    .font(.caption.weight(.semibold))
-                                    .frame(width: 44, height: 56)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .fill(session.currentPageIndex == i ? Color.accentColor.opacity(0.25) : Color(nsColor: .controlBackgroundColor))
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .strokeBorder(session.currentPageIndex == i ? Color.accentColor : Color.primary.opacity(0.15))
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                        }
+    private func applyLocalDraft() {
+        session.editDraft = localDraft
+        session.applySelectedTextEdit(draft: localDraft)
+        statusMessage = session.status
+        localDraft = ""
+    }
+
+    private var pageThumbs: some View {
+        ScrollView {
+            LazyVStack(spacing: 8) {
+                ForEach(0..<session.pageCount, id: \.self) { i in
+                    Button { session.goToPage(i) } label: {
+                        Text("\(i + 1)")
+                            .font(.caption.weight(.semibold))
+                            .frame(width: 44, height: 56)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(session.currentPageIndex == i ? Color.accentColor.opacity(0.25) : Color(nsColor: .controlBackgroundColor))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .strokeBorder(session.currentPageIndex == i ? Color.accentColor : Color.primary.opacity(0.15))
+                            )
                     }
-                    .padding(8)
+                    .buttonStyle(.plain)
                 }
-                .frame(width: 64)
-                .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
-
-                Divider()
-                PDFCanvasView(session: session)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            HStack {
-                Text(session.status.isEmpty ? "Ready." : session.status)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                if !session.lastClickDebug.isEmpty {
-                    Text(session.lastClickDebug)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                Spacer()
             }
             .padding(8)
         }
-        .onChange(of: session.status) { _, new in
-            statusMessage = new
+        .frame(width: 64)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+    }
+
+    /// Pages-like: list every line of page content and edit it.
+    private var pageContentPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Page content")
+                    .font(.headline)
+                Spacer()
+                Text("p.\(session.currentPageIndex + 1)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text("Edit any line below, then Apply. Or click a word on the page. This is the reliable way to change main content.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if session.pageLines.isEmpty {
+                Text(session.currentPageHasTextLayer
+                     ? "No line breaks detected — click words on the page."
+                     : "No text layer. Use “Edit text in screenshot”.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 8)
+                Spacer()
+            } else {
+                List {
+                    ForEach(session.pageLines) { line in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Line \(line.index + 1) · ~\(Int(line.fontSize))pt")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            HStack {
+                                TextField(
+                                    "Text",
+                                    text: Binding(
+                                        get: { lineDrafts[line.index] ?? line.text },
+                                        set: { lineDrafts[line.index] = $0 }
+                                    )
+                                )
+                                .textFieldStyle(.roundedBorder)
+                                Button("Apply") {
+                                    let draft = lineDrafts[line.index] ?? line.text
+                                    session.applyPageLineEdit(line: line, newText: draft)
+                                    statusMessage = session.status
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+                .listStyle(.inset)
+            }
         }
+        .padding(10)
+        .frame(width: 300)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+    }
+
+    private var footer: some View {
+        HStack {
+            Text(session.status.isEmpty ? "Ready. Tip: use Page content list if click-edit is awkward." : session.status)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(8)
     }
 
     private var toolHint: String {
         switch session.tool {
         case .editText:
-            return "Edit word: click letters on the page → blue bar appears → type new word → Apply. If nothing selects, page is image-only → use Edit text in screenshot."
+            return "Edit word: click a word OR edit lines in “Page content” → type → Apply. Replacement matches original size."
         case .addText:
-            return "Add text: click empty space to place a new text box."
+            return "Add text: click empty space to place a text box."
         case .highlight:
-            return "Highlight: click a word."
+            return "Highlight: drag across words (like Pages/Canva), or click one word."
         case .underline:
-            return "Underline: click a word."
+            return "Underline: drag across text, or click a word."
         case .strike:
-            return "Strike: click a word."
+            return "Strike: drag across text, or click a word."
         case .signature:
-            return "Sign: click where signature should go."
+            return "Sign: click where the signature should go."
         case .stamp:
             return "Stamp: click to place stamp text."
         case .screenshot:
-            return "Page shot: click opens image adjust. Prefer Edit text in screenshot for words."
+            return "Page shot: click opens image adjust. Prefer Edit text in screenshot for words in images."
         case .select:
-            return "Select: drag to select text for copy. Switch to Edit word to change text."
+            return "Select: drag to select/copy text."
+        }
+    }
+}
+
+// MARK: - Focusable AppKit text field (typing must work)
+
+private struct FocusableTextField: NSViewRepresentable {
+    @Binding var text: String
+    var placeholder: String
+    var focusToken: Int
+    var onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField(string: text)
+        field.placeholderString = placeholder
+        field.isBordered = true
+        field.isBezeled = true
+        field.bezelStyle = .roundedBezel
+        field.isEditable = true
+        field.isSelectable = true
+        field.font = NSFont.systemFont(ofSize: 13)
+        field.delegate = context.coordinator
+        field.focusRingType = .exterior
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.submitted(_:))
+        context.coordinator.lastFocusToken = focusToken
+        DispatchQueue.main.async {
+            field.window?.makeFirstResponder(field)
+            field.currentEditor()?.selectAll(nil)
+        }
+        return field
+    }
+
+    func updateNSView(_ nsView: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        if nsView.stringValue != text, nsView.currentEditor() == nil {
+            nsView.stringValue = text
+        }
+        if context.coordinator.lastFocusToken != focusToken {
+            context.coordinator.lastFocusToken = focusToken
+            DispatchQueue.main.async {
+                nsView.window?.makeFirstResponder(nsView)
+                nsView.currentEditor()?.selectAll(nil)
+            }
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: FocusableTextField
+        var lastFocusToken: Int = -1
+
+        init(_ parent: FocusableTextField) {
+            self.parent = parent
+        }
+
+        nonisolated func controlTextDidChange(_ obj: Notification) {
+            let value = (obj.object as? NSTextField)?.stringValue ?? ""
+            MainActor.assumeIsolated {
+                self.parent.text = value
+            }
+        }
+
+        @objc nonisolated func submitted(_ sender: NSTextField) {
+            let value = sender.stringValue
+            MainActor.assumeIsolated {
+                self.parent.text = value
+                self.parent.onSubmit()
+            }
+        }
+
+        nonisolated func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                let value = (control as? NSTextField)?.stringValue ?? ""
+                MainActor.assumeIsolated {
+                    self.parent.text = value
+                    self.parent.onSubmit()
+                }
+                return true
+            }
+            return false
         }
     }
 }
@@ -1039,7 +1208,6 @@ final class PDFSessionHolder: ObservableObject {
     private var cancellable: AnyCancellable?
 
     func attach(_ newSession: LivePDFSession?) {
-        // Re-broadcast nested session changes so toolbars that read holder.session still refresh
         if let newSession {
             cancellable = newSession.objectWillChange.sink { [weak self] _ in
                 self?.objectWillChange.send()
