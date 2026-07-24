@@ -12,49 +12,51 @@ struct CompressView: View {
         ToolChrome(
             title: "Compress",
             subtitle: "Reduce PDF size by re-encoding pages. Best for scan-heavy documents.",
-            systemImage: "archivebox"
-        ) {
-            HStack {
-                PrimaryActionButton(
-                    title: "Compress",
-                    systemImage: "archivebox",
-                    enabled: !items.isEmpty && !job.isRunning
-                ) {
-                    Task { await run() }
-                }
-                Spacer()
-            }
-            JobStatusBanner(state: job, onReveal: app.revealInFinder, onOpen: app.open)
-        } content: {
-            if items.isEmpty {
-                DropZoneView(
-                    title: "Drop PDFs to compress",
-                    subtitle: "Works entirely offline with PDFKit",
-                    systemImage: "archivebox.fill",
-                    allowedTypes: [.pdf],
-                    allowsMultiple: true
-                ) { urls in
-                    items = urls.map { DocumentItem(url: $0) }
-                }
-            } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    FileQueueView(items: $items)
-                        .frame(minHeight: 160)
-                    Picker("Quality", selection: $quality) {
-                        ForEach(CompressQuality.allCases) { q in
-                            Text(q.title).tag(q)
+            systemImage: "archivebox",
+            content: {
+                if items.isEmpty {
+                    DropZoneView(
+                        title: "Drop PDFs to compress",
+                        subtitle: "Works entirely offline with PDFKit",
+                        systemImage: "archivebox.fill",
+                        allowedTypes: [.pdf],
+                        allowsMultiple: true
+                    ) { urls in
+                        items = urls.map { DocumentItem(url: $0) }
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 12) {
+                        FileQueueView(items: $items)
+                            .frame(minHeight: 160)
+                        Picker("Quality", selection: $quality) {
+                            ForEach(CompressQuality.allCases) { q in
+                                Text(q.title).tag(q)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        HStack {
+                            Button("Add…") {
+                                items.append(contentsOf: app.pickFiles(contentTypes: [.pdf]).map { DocumentItem(url: $0) })
+                            }
+                            Button("Clear", role: .destructive) { items = []; job = .idle }
                         }
                     }
-                    .pickerStyle(.segmented)
-                    HStack {
-                        Button("Add…") {
-                            items.append(contentsOf: app.pickFiles(contentTypes: [.pdf]).map { DocumentItem(url: $0) })
-                        }
-                        Button("Clear", role: .destructive) { items = []; job = .idle }
-                    }
                 }
+            },
+            controls: {
+                HStack {
+                    PrimaryActionButton(
+                        title: "Compress",
+                        systemImage: "archivebox",
+                        enabled: !items.isEmpty && !job.isRunning
+                    ) {
+                        Task { await run() }
+                    }
+                    Spacer()
+                }
+                JobStatusBanner(state: job, onReveal: app.revealInFinder, onOpen: app.open)
             }
-        }
+        )
     }
 
     private func run() async {

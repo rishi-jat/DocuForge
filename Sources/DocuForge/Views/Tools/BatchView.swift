@@ -14,25 +14,8 @@ struct BatchView: View {
         ToolChrome(
             title: "Batch",
             subtitle: "Apply one operation to many files. Results land in Downloads/DocuForge.",
-            systemImage: "square.stack.3d.up"
-        ) {
-            HStack {
-                PrimaryActionButton(
-                    title: "Run Batch",
-                    systemImage: "play.fill",
-                    enabled: !items.isEmpty && !job.isRunning
-                ) {
-                    Task { await run() }
-                }
-                Spacer()
-            }
-            if !reportSummary.isEmpty {
-                Text(reportSummary)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            JobStatusBanner(state: job, onReveal: app.revealInFinder, onOpen: app.open)
-        } content: {
+            systemImage: "square.stack.3d.up",
+            content: {
             VStack(alignment: .leading, spacing: 14) {
                 if items.isEmpty {
                     DropZoneView(
@@ -73,7 +56,27 @@ struct BatchView: View {
                     .pickerStyle(.segmented)
                 }
             }
-        }
+            },
+            controls: {
+            HStack {
+                PrimaryActionButton(
+                    title: "Run Batch",
+                    systemImage: "play.fill",
+                    enabled: !items.isEmpty && !job.isRunning
+                ) {
+                    Task { await run() }
+                }
+                Spacer()
+            }
+            if !reportSummary.isEmpty {
+                Text(reportSummary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            JobStatusBanner(state: job, onReveal: app.revealInFinder, onOpen: app.open)
+        
+            }
+        )
     }
 
     private func run() async {

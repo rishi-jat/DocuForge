@@ -6,12 +6,10 @@ struct DocuForgeApp: App {
     @StateObject private var appModel = AppModel()
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("DocuForge") {
             ContentView()
                 .environmentObject(appModel)
-                .frame(minWidth: 980, minHeight: 640)
         }
-        .windowStyle(.automatic)
         .defaultSize(width: 1180, height: 760)
         .commands {
             CommandGroup(replacing: .newItem) {}

@@ -17,21 +17,19 @@ struct DropZoneView: View {
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: systemImage)
-                .font(.system(size: 44, weight: .light))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(isTargeted ? Color.accentColor : Color.primary.opacity(0.75))
+                .font(.system(size: 48, weight: .semibold))
+                .foregroundStyle(isTargeted ? Color.accentColor : (colorScheme == .dark ? Color.white : Color.black.opacity(0.75)))
 
-            VStack(spacing: 6) {
-                Text(title)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.center)
-                Text(subtitle)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(title)
+                .font(.title2.weight(.bold))
+                .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
+                .multilineTextAlignment(.center)
+
+            Text(subtitle)
+                .font(.body)
+                .foregroundStyle(colorScheme == .dark ? Color(white: 0.82) : Color(white: 0.25))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
 
             Button("Choose Files…") {
                 let panel = NSOpenPanel()
@@ -46,22 +44,20 @@ struct DropZoneView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
         }
+        .padding(36)
         .frame(maxWidth: .infinity)
-        .frame(minHeight: 260)
-        .padding(32)
+        .frame(minHeight: 280)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(fillColor)
+                .fill(surfaceFill)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(
-                    isTargeted ? Color.accentColor : borderColor,
-                    style: StrokeStyle(lineWidth: isTargeted ? 2.5 : 1.5, dash: isTargeted ? [] : [10, 7])
+                    isTargeted ? Color.accentColor : borderStroke,
+                    style: StrokeStyle(lineWidth: isTargeted ? 3 : 2, dash: isTargeted ? [] : [9, 6])
                 )
         )
-        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.35 : 0.06), radius: 12, y: 2)
-        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             Task {
                 let urls = await Self.resolveURLs(from: providers)
@@ -80,23 +76,20 @@ struct DropZoneView: View {
             }
             return true
         }
-        .animation(.easeInOut(duration: 0.15), value: isTargeted)
     }
 
-    private var fillColor: Color {
+    private var surfaceFill: Color {
         if isTargeted {
-            return Color.accentColor.opacity(colorScheme == .dark ? 0.18 : 0.10)
+            return Color.accentColor.opacity(colorScheme == .dark ? 0.25 : 0.12)
         }
-        // Elevated surface so drop zones never blend into the window in dark mode.
+        // Explicit RGB so dark mode never blends into the window.
         return colorScheme == .dark
-            ? Color(nsColor: .alternatingContentBackgroundColors.last ?? .controlBackgroundColor)
-            : Color(nsColor: .controlBackgroundColor)
+            ? Color(red: 0.22, green: 0.22, blue: 0.24)
+            : Color(red: 0.93, green: 0.93, blue: 0.95)
     }
 
-    private var borderColor: Color {
-        colorScheme == .dark
-            ? Color.white.opacity(0.28)
-            : Color.primary.opacity(0.18)
+    private var borderStroke: Color {
+        colorScheme == .dark ? Color(white: 0.65) : Color(white: 0.45)
     }
 
     private static func resolveURLs(from providers: [NSItemProvider]) async -> [URL] {
@@ -115,10 +108,10 @@ struct DropZoneView: View {
                     provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
                         if let data = item as? Data,
                            let path = String(data: data, encoding: .utf8),
-                           let url = URL(string: path) {
-                            cont.resume(returning: url)
-                        } else if let url = item as? URL {
-                            cont.resume(returning: url)
+                           let u = URL(string: path) {
+                            cont.resume(returning: u)
+                        } else if let u = item as? URL {
+                            cont.resume(returning: u)
                         } else {
                             cont.resume(returning: nil)
                         }

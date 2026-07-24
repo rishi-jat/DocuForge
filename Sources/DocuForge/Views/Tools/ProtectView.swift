@@ -19,58 +19,58 @@ struct ProtectView: View {
     var body: some View {
         ToolChrome(
             title: "Password",
-            subtitle: "Encrypt or unlock PDFs with standard PDF user/owner passwords. Keys never leave your Mac.",
-            systemImage: "lock.doc"
-        ) {
-            HStack {
-                PrimaryActionButton(
-                    title: mode == .lock ? "Protect" : "Unlock",
-                    systemImage: mode == .lock ? "lock.fill" : "lock.open.fill",
-                    enabled: canRun
-                ) {
-                    Task { await run() }
-                }
-                Spacer()
-            }
-            JobStatusBanner(state: job, onReveal: app.revealInFinder, onOpen: app.open)
-        } content: {
-            if let item {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Image(systemName: "lock.doc")
-                        Text(item.displayName).font(.headline)
-                        Spacer()
-                        Button("Clear") { self.item = nil; job = .idle; password = ""; confirm = "" }
-                    }
-                    .padding()
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+            subtitle: "Encrypt or unlock PDFs with standard PDF passwords. Keys never leave your Mac.",
+            systemImage: "lock.doc",
+            content: {
+                if let item {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Image(systemName: "lock.doc")
+                            Text(item.displayName).font(.headline)
+                            Spacer()
+                            Button("Clear") { self.item = nil; job = .idle; password = ""; confirm = "" }
+                        }
+                        .padding()
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
 
-                    Picker("Action", selection: $mode) {
-                        ForEach(Mode.allCases) { m in
-                            Text(m.title).tag(m)
+                        Picker("Action", selection: $mode) {
+                            ForEach(Mode.allCases) { m in Text(m.title).tag(m) }
+                        }
+                        .pickerStyle(.segmented)
+
+                        SecureField(mode == .lock ? "Password" : "Current password", text: $password)
+                            .textFieldStyle(.roundedBorder)
+                        if mode == .lock {
+                            SecureField("Confirm password", text: $confirm)
+                                .textFieldStyle(.roundedBorder)
                         }
                     }
-                    .pickerStyle(.segmented)
-
-                    SecureField(mode == .lock ? "Password" : "Current password", text: $password)
-                        .textFieldStyle(.roundedBorder)
-                    if mode == .lock {
-                        SecureField("Confirm password", text: $confirm)
-                            .textFieldStyle(.roundedBorder)
+                } else {
+                    DropZoneView(
+                        title: "Drop a PDF",
+                        subtitle: "Protect or unlock offline with PDFKit",
+                        systemImage: "lock.doc",
+                        allowedTypes: [.pdf],
+                        allowsMultiple: false
+                    ) { urls in
+                        if let url = urls.first { item = DocumentItem(url: url) }
                     }
                 }
-            } else {
-                DropZoneView(
-                    title: "Drop a PDF",
-                    subtitle: "Protect or unlock offline with PDFKit",
-                    systemImage: "lock.doc",
-                    allowedTypes: [.pdf],
-                    allowsMultiple: false
-                ) { urls in
-                    if let url = urls.first { item = DocumentItem(url: url) }
+            },
+            controls: {
+                HStack {
+                    PrimaryActionButton(
+                        title: mode == .lock ? "Protect" : "Unlock",
+                        systemImage: mode == .lock ? "lock.fill" : "lock.open.fill",
+                        enabled: canRun
+                    ) {
+                        Task { await run() }
+                    }
+                    Spacer()
                 }
+                JobStatusBanner(state: job, onReveal: app.revealInFinder, onOpen: app.open)
             }
-        }
+        )
     }
 
     private var canRun: Bool {

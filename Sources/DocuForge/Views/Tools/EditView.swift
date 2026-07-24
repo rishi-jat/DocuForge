@@ -58,30 +58,41 @@ struct EditView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            Text("DocuForge UI · Build UI-VERIFY-233406 · if you see this, you have the new build")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.black)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.yellow)
+                .accessibilityLabel("DocuForge UI build banner")
+
             topBar
             statusBanner
             Divider()
 
-            switch mode {
-            case .none:
-                emptyState
-            case .text:
-                VStack(spacing: 0) {
-                    findReplaceBar
-                    Divider()
-                    textWorkspace
+            Group {
+                switch mode {
+                case .none:
+                    emptyState
+                case .text:
+                    VStack(spacing: 0) {
+                        findReplaceBar
+                        Divider()
+                        textWorkspace
+                    }
+                case .pdf:
+                    VStack(spacing: 0) {
+                        findReplaceBar
+                        Divider()
+                        pdfWorkspace
+                    }
+                case .image:
+                    imageWorkspace
                 }
-            case .pdf:
-                VStack(spacing: 0) {
-                    findReplaceBar
-                    Divider()
-                    pdfWorkspace
-                }
-            case .image:
-                imageWorkspace
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -190,6 +201,10 @@ struct EditView: View {
     private var emptyState: some View {
         ScrollView {
             VStack(spacing: 24) {
+                Text("Build UI-VERIFY-233406")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Color.accentColor)
+
                 DropZoneView(
                     title: "Drop a file to start editing",
                     subtitle: "PDF · Word · Pages · PowerPoint · Keynote · text · screenshots & images",
@@ -201,7 +216,14 @@ struct EditView: View {
                 }
                 .frame(maxWidth: 640)
 
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 12),
+                        GridItem(.flexible(), spacing: 12),
+                        GridItem(.flexible(), spacing: 12)
+                    ],
+                    spacing: 12
+                ) {
                     featureCard("Find & replace", "Change every occurrence of a word in one step", "magnifyingglass")
                     featureCard("Keep layout", "Convert with Pages/Keynote when installed so slides don’t break", "rectangle.3.group")
                     featureCard("Screenshots", "Paste or edit screenshots inside PDFs and image files", "camera.viewfinder")

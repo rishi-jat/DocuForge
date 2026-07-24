@@ -28,12 +28,14 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
   <string>6.0</string>
   <key>CFBundleName</key>
   <string>DocuForge</string>
+  <key>CFBundleDisplayName</key>
+  <string>DocuForge</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.0</string>
+  <string>1.0.4</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>104</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>NSHighResolutionCapable</key>

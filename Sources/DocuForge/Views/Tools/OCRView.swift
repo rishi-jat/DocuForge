@@ -13,69 +13,66 @@ struct OCRView: View {
         ToolChrome(
             title: "OCR",
             subtitle: "Recognize text on-device with Apple Vision. Export plain text or keep a PDF copy with a text sidecar.",
-            systemImage: "text.viewfinder"
-        ) {
-            HStack(spacing: 12) {
-                PrimaryActionButton(
-                    title: "Run OCR",
-                    systemImage: "text.viewfinder",
-                    enabled: item != nil && !job.isRunning
-                ) {
-                    Task { await run(exportSearchable: false) }
-                }
-                Button {
-                    Task { await run(exportSearchable: true) }
-                } label: {
-                    Label("PDF + Text", systemImage: "doc.text")
-                }
-                .controlSize(.large)
-                .disabled(item == nil || item?.format != .pdf || job.isRunning)
-                Spacer()
-            }
-            JobStatusBanner(state: job, onReveal: app.revealInFinder, onOpen: app.open)
-        } content: {
-            if let item {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Image(systemName: item.format.isImage ? "photo" : "doc.richtext")
-                        Text(item.displayName).font(.headline)
-                        Spacer()
-                        if confidence > 0 {
-                            Text("Confidence \(Int(confidence * 100))%")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+            systemImage: "text.viewfinder",
+            content: {
+                if let item {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Image(systemName: item.format.isImage ? "photo" : "doc.richtext")
+                            Text(item.displayName).font(.headline)
+                            Spacer()
+                            if confidence > 0 {
+                                Text("Confidence \(Int(confidence * 100))%")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Button("Clear") {
+                                self.item = nil; previewText = ""; confidence = 0; job = .idle
+                            }
                         }
-                        Button("Clear") {
-                            self.item = nil
-                            previewText = ""
-                            confidence = 0
-                            job = .idle
-                        }
-                    }
-                    .padding()
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+                        .padding()
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
 
-                    TextEditor(text: $previewText)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(minHeight: 280)
-                        .border(Color.primary.opacity(0.08))
-                }
-            } else {
-                DropZoneView(
-                    title: "Drop a PDF or image",
-                    subtitle: "Scanned documents and photos work offline",
-                    systemImage: "text.viewfinder",
-                    allowedTypes: [.pdf, .image],
-                    allowsMultiple: false
-                ) { urls in
-                    if let url = urls.first {
-                        self.item = DocumentItem(url: url)
-                        previewText = ""
-                        confidence = 0
+                        TextEditor(text: $previewText)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(minHeight: 280)
+                            .border(Color.primary.opacity(0.15))
+                    }
+                } else {
+                    DropZoneView(
+                        title: "Drop a PDF or image",
+                        subtitle: "Scanned documents and photos work offline",
+                        systemImage: "text.viewfinder",
+                        allowedTypes: [.pdf, .image],
+                        allowsMultiple: false
+                    ) { urls in
+                        if let url = urls.first {
+                            self.item = DocumentItem(url: url)
+                            previewText = ""; confidence = 0
+                        }
                     }
                 }
+            },
+            controls: {
+                HStack(spacing: 12) {
+                    PrimaryActionButton(
+                        title: "Run OCR",
+                        systemImage: "text.viewfinder",
+                        enabled: item != nil && !job.isRunning
+                    ) {
+                        Task { await run(exportSearchable: false) }
+                    }
+                    Button {
+                        Task { await run(exportSearchable: true) }
+                    } label: {
+                        Label("PDF + Text", systemImage: "doc.text")
+                    }
+                    .controlSize(.large)
+                    .disabled(item == nil || item?.format != .pdf || job.isRunning)
+                    Spacer()
+                }
+                JobStatusBanner(state: job, onReveal: app.revealInFinder, onOpen: app.open)
             }
-        }
+        )
     }
 
     private func run(exportSearchable: Bool) async {
@@ -84,7 +81,6 @@ struct OCRView: View {
         do {
             let dir = try app.makeOutputDirectory(named: "OCR")
             let base = item.url.deletingPathExtension().lastPathComponent
-
             if exportSearchable {
                 let pdfOut = dir.appendingPathComponent("\(base)-copy.pdf")
                 let txtOut = dir.appendingPathComponent("\(base)-ocr.txt")

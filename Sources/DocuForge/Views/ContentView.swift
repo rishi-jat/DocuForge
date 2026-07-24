@@ -5,16 +5,17 @@ struct ContentView: View {
     @EnvironmentObject private var app: AppModel
 
     var body: some View {
-        NavigationSplitView {
+        // HSplitView is more reliable than NavigationSplitView for SPM/macOS apps:
+        // detail content was collapsing / not painting under NavigationSplitView.
+        HSplitView {
             SidebarView(selection: $app.selectedTool)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
-        } detail: {
-            detail
-                .frame(minWidth: 640, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
+                .frame(minWidth: 220, idealWidth: 250, maxWidth: 300)
                 .background(Color(nsColor: .windowBackgroundColor))
+
+            detail
+                .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .navigationTitle(app.selectedTool.title)
-        .navigationSplitViewStyle(.balanced)
+        .frame(minWidth: 900, minHeight: 600)
     }
 
     @ViewBuilder

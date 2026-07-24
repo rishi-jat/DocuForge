@@ -21,26 +21,8 @@ struct PageManageView: View {
         ToolChrome(
             title: "Pages",
             subtitle: "Reorder, rotate, delete, or extract pages. Changes are written to a new PDF.",
-            systemImage: "rectangle.stack"
-        ) {
-            HStack(spacing: 10) {
-                PrimaryActionButton(
-                    title: "Save PDF",
-                    systemImage: "square.and.arrow.down",
-                    enabled: sourceURL != nil && !pages.isEmpty && !job.isRunning
-                ) {
-                    Task { await save() }
-                }
-                Button("Rotate Left") { rotateSelection(by: -90) }
-                    .disabled(selection.isEmpty)
-                Button("Rotate Right") { rotateSelection(by: 90) }
-                    .disabled(selection.isEmpty)
-                Button("Delete", role: .destructive) { deleteSelection() }
-                    .disabled(selection.isEmpty)
-                Spacer()
-            }
-            JobStatusBanner(state: job, onReveal: app.revealInFinder, onOpen: app.open)
-        } content: {
+            systemImage: "rectangle.stack",
+            content: {
             if sourceURL == nil {
                 DropZoneView(
                     title: "Drop a PDF to manage pages",
@@ -75,7 +57,28 @@ struct PageManageView: View {
                     .frame(minHeight: 320)
                 }
             }
-        }
+            },
+            controls: {
+            HStack(spacing: 10) {
+                PrimaryActionButton(
+                    title: "Save PDF",
+                    systemImage: "square.and.arrow.down",
+                    enabled: sourceURL != nil && !pages.isEmpty && !job.isRunning
+                ) {
+                    Task { await save() }
+                }
+                Button("Rotate Left") { rotateSelection(by: -90) }
+                    .disabled(selection.isEmpty)
+                Button("Rotate Right") { rotateSelection(by: 90) }
+                    .disabled(selection.isEmpty)
+                Button("Delete", role: .destructive) { deleteSelection() }
+                    .disabled(selection.isEmpty)
+                Spacer()
+            }
+            JobStatusBanner(state: job, onReveal: app.revealInFinder, onOpen: app.open)
+        
+            }
+        )
     }
 
     private func pageCell(_ page: PageThumb) -> some View {

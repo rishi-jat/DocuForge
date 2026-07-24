@@ -15,70 +15,69 @@ struct SplitView: View {
         ToolChrome(
             title: "Split PDF",
             subtitle: "Extract every page, fixed-size chunks, or custom ranges like 1-3, 5, 8-10.",
-            systemImage: "scissors"
-        ) {
-            HStack {
-                PrimaryActionButton(
-                    title: "Split",
-                    systemImage: "scissors",
-                    enabled: item != nil && !job.isRunning
-                ) {
-                    Task { await run() }
-                }
-                Spacer()
-            }
-            JobStatusBanner(state: job, onReveal: app.revealInFinder, onOpen: app.open)
-        } content: {
-            if let item {
-                VStack(alignment: .leading, spacing: 16) {
-                    fileCard(item)
-                    Picker("Mode", selection: $mode) {
-                        ForEach(SplitMode.allCases) { m in
-                            Text(m.title).tag(m)
+            systemImage: "scissors",
+            content: {
+                if let item {
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack {
+                            Image(systemName: "doc.richtext")
+                            VStack(alignment: .leading) {
+                                Text(item.displayName).font(.headline)
+                                Text(item.formattedSize).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .padding()
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+
+                        Picker("Mode", selection: $mode) {
+                            ForEach(SplitMode.allCases) { m in
+                                Text(m.title).tag(m)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+
+                        if mode == .ranges {
+                            TextField("Ranges (e.g. 1-3, 5, 8-10)", text: $rangesText)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        if mode == .everyN {
+                            Stepper("Every \(everyN) pages", value: $everyN, in: 1...max(pageCount, 1))
+                        }
+                        Text("Document has \(pageCount) page\(pageCount == 1 ? "" : "s").")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Choose another PDF…") {
+                            self.item = nil
+                            job = .idle
                         }
                     }
-                    .pickerStyle(.segmented)
-
-                    if mode == .ranges {
-                        TextField("Ranges (e.g. 1-3, 5, 8-10)", text: $rangesText)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    if mode == .everyN {
-                        Stepper("Every \(everyN) pages", value: $everyN, in: 1...max(pageCount, 1))
-                    }
-                    Text("Document has \(pageCount) page\(pageCount == 1 ? "" : "s").")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Button("Choose another PDF…") {
-                        self.item = nil
-                        job = .idle
+                } else {
+                    DropZoneView(
+                        title: "Drop a PDF to split",
+                        subtitle: "One document at a time",
+                        systemImage: "scissors",
+                        allowedTypes: [.pdf],
+                        allowsMultiple: false
+                    ) { urls in
+                        Task { await load(urls.first) }
                     }
                 }
-            } else {
-                DropZoneView(
-                    title: "Drop a PDF to split",
-                    subtitle: "One document at a time",
-                    systemImage: "scissors",
-                    allowedTypes: [.pdf],
-                    allowsMultiple: false
-                ) { urls in
-                    Task { await load(urls.first) }
+            },
+            controls: {
+                HStack {
+                    PrimaryActionButton(
+                        title: "Split",
+                        systemImage: "scissors",
+                        enabled: item != nil && !job.isRunning
+                    ) {
+                        Task { await run() }
+                    }
+                    Spacer()
                 }
+                JobStatusBanner(state: job, onReveal: app.revealInFinder, onOpen: app.open)
             }
-        }
-    }
-
-    private func fileCard(_ item: DocumentItem) -> some View {
-        HStack {
-            Image(systemName: "doc.richtext")
-            VStack(alignment: .leading) {
-                Text(item.displayName).font(.headline)
-                Text(item.formattedSize).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding()
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+        )
     }
 
     private func load(_ url: URL?) async {

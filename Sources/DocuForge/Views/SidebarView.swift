@@ -3,42 +3,44 @@ import DocuForgeCore
 
 struct SidebarView: View {
     @Binding var selection: ToolKind
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        List(selection: $selection) {
-            ForEach(ToolSection.allCases) { section in
-                Section(section.title) {
-                    ForEach(ToolKind.allCases.filter { $0.section == section }) { tool in
-                        Label {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(tool.title)
-                                Text(tool.subtitle)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            Text("Tools")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+
+            List(selection: $selection) {
+                ForEach(ToolSection.allCases) { section in
+                    Section(section.title) {
+                        ForEach(ToolKind.allCases.filter { $0.section == section }) { tool in
+                            Label {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(tool.title)
+                                    Text(tool.subtitle)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } icon: {
+                                Image(systemName: tool.systemImage)
                             }
-                        } icon: {
-                            Image(systemName: tool.systemImage)
-                                .symbolRenderingMode(.hierarchical)
+                            .tag(tool)
+                            .padding(.vertical, 2)
                         }
-                        .tag(tool)
                     }
                 }
             }
+            .listStyle(.sidebar)
+
+            Divider()
+            Text("Offline-first · local processing")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .listStyle(.sidebar)
-        .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
-        .safeAreaInset(edge: .bottom) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Start with Edit")
-                    .font(.caption.weight(.semibold))
-                Text("Open a file to change text, pages, or screenshots. Convert uses Pages/Keynote when installed so layouts stay intact.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.ultraThinMaterial)
-        }
+        .background(colorScheme == .dark ? Color(red: 0.12, green: 0.12, blue: 0.13) : Color(nsColor: .windowBackgroundColor))
     }
 }
