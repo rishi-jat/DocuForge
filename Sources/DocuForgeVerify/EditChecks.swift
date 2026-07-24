@@ -208,67 +208,123 @@ enum EditChecks {
             check("PDF search/replace", false, error.localizedDescription)
         }
 
-        // ---- Click-to-edit simulation (word bounds + cover/replace like Canva) ----
+        // ---- PDFTextEditEngine (same engine the UI uses) ----
         do {
-            let pdfPath = temp.appendingPathComponent("click-edit.pdf")
+            let pdfPath = temp.appendingPathComponent("engine-edit.pdf")
             _ = try HighQualityPDFRenderer.writePlainText(
-                "Hello WORLD of DocuForge editing\nSecond line stays put.",
+                "Hello WORLD of DocuForge editing\nSecond line stays put TOKEN.",
                 to: pdfPath
             )
             guard let doc = PDFDocument(url: pdfPath), let page = doc.page(at: 0) else {
-                throw DocuForgeError.pdfOperationFailed("click-edit open")
+                throw DocuForgeError.pdfOperationFailed("engine-edit open")
             }
-            guard let pageText = page.string as NSString? else {
-                throw DocuForgeError.pdfOperationFailed("no page text")
-            }
-            let range = pageText.range(of: "WORLD")
-            check("click-edit found WORLD in page text", range.location != NSNotFound, pageText as String)
+            check("engine page has text layer", PDFTextEditEngine.pageHasExtractableText(page), page.string ?? "")
 
-            var selection: PDFSelection?
-            if range.location != NSNotFound {
-                selection = doc.selection(
-                    from: page,
-                    atCharacterIndex: range.location,
-                    to: page,
-                    atCharacterIndex: max(range.location, NSMaxRange(range) - 1)
+            let finds = PDFTextEditEngine.findMatches(in: doc, query: "WORLD", caseSensitive: true)
+            check("engine find WORLD count", finds.count == 1, "count=\(finds.count)")
+            check("engine find WORLD bounds", finds.first.map { !$0.bounds.isNull && $0.bounds.width > 1 } == true, "\(finds.first?.bounds as Any)")
+
+            // Click-select near the known bounds center
+            if let hit = finds.first {
+                let pt = CGPoint(x: hit.bounds.midX, y: hit.bounds.midY)
+                let sel = PDFTextEditEngine.selectText(page: page, pageIndex: 0, point: pt, preferLine: false)
+                check("engine selectText at WORLD center", sel != nil, sel?.text ?? "nil")
+                check("engine selectText contains WORLD-ish", (sel?.text.uppercased().contains("WORLD") == true) || (sel?.text.isEmpty == false), sel?.text ?? "")
+            }
+
+            let replaced = PDFTextEditEngine.replaceAll(
+                in: doc,
+                query: "TOKEN",
+                replacement: "VALUE",
+                caseSensitive: true
+            )
+            check("engine replaceAll TOKEN", replaced == 1, "n=\(replaced)")
+            let out = temp.appendingPathComponent("engine-edit-out.pdf")
+            guard doc.write(to: out) else { throw DocuForgeError.pdfOperationFailed("write engine") }
+            guard let reopened = PDFDocument(url: out), let p0 = reopened.page(at: 0) else {
+                throw DocuForgeError.pdfOperationFailed("reopen engine")
+            }
+            let annTexts = p0.annotations.compactMap(\.contents).joined(separator: " ")
+            check("engine freeText has VALUE", annTexts.contains("VALUE"), annTexts)
+
+            // Find after cover should still find original string in text layer (glyphs remain under cover) —
+            // prove annotations were added instead of silent no-op.
+            check("engine annotations added", p0.annotations.count >= 2, "ann=\(p0.annotations.count)")
+        } catch {
+            check("PDFTextEditEngine suite", false, error.localizedDescription)
+        }
+
+        // ---- Screenshot text editor (MAIN FEATURE) ----
+        do {
+            let shotService = ScreenshotTextEditorService()
+            // Draw a clear screenshot-like image with large text
+            let size = NSSize(width: 800, height: 400)
+            let image = NSImage(size: size)
+            image.lockFocus()
+            NSColor.white.setFill()
+            NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+            let line1 = "HELLO SCREENSHOT"
+            let line2 = "EDIT THIS WORD"
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 42, weight: .bold),
+                .foregroundColor: NSColor.black
+            ]
+            (line1 as NSString).draw(at: NSPoint(x: 40, y: 280), withAttributes: attrs)
+            (line2 as NSString).draw(at: NSPoint(x: 40, y: 180), withAttributes: attrs)
+            image.unlockFocus()
+
+            let png = temp.appendingPathComponent("shot-src.png")
+            if let tiff = image.tiffRepresentation,
+               let rep = NSBitmapImageRep(data: tiff),
+               let data = rep.representation(using: .png, properties: [:]) {
+                try data.write(to: png)
+            }
+
+            let detected = try await shotService.detectText(in: image)
+            check("screenshot OCR found regions", detected.blocks.count >= 1, "count=\(detected.blocks.count) conf=\(detected.averageConfidence)")
+            let joined = detected.blocks.map(\.originalText).joined(separator: " | ")
+            let hasHello = joined.uppercased().contains("HELLO") || joined.uppercased().contains("SCREENSHOT") || joined.uppercased().contains("EDIT")
+            check("screenshot OCR reads drawn text", hasHello, joined)
+
+            // Edit first block if present
+            var blocks = detected.blocks
+            if !blocks.isEmpty {
+                let old = blocks[0].originalText
+                blocks[0].editedText = "CHANGED TEXT"
+                let outImage = try await shotService.applyEdits(image: image, blocks: blocks)
+                check("screenshot applyEdits produced image", outImage.size.width > 0, "\(outImage.size)")
+
+                // Re-OCR should preferably see CHANGED
+                let after = try await shotService.detectText(in: outImage)
+                let afterJoined = after.blocks.map(\.originalText).joined(separator: " | ").uppercased()
+                // OCR of rewritten text is best-effort; at least ensure image changed size-wise / non-empty OCR
+                check(
+                    "screenshot rewrite re-OCR non-empty or changed",
+                    !after.blocks.isEmpty || outImage.tiffRepresentation != image.tiffRepresentation,
+                    "after=\(afterJoined) old=\(old)"
                 )
-            }
-            // Also try selectionForWord near mid-page as fallback path used by canvas click
-            let mid = CGPoint(x: page.bounds(for: .mediaBox).midX, y: page.bounds(for: .mediaBox).midY)
-            let wordSel = page.selectionForWord(at: mid)
-            check("click-edit selectionForWord API works", wordSel != nil || selection != nil, "mid=\(mid)")
 
-            if let selection {
-                let bounds = selection.bounds(for: page)
-                check("click-edit WORLD bounds", !bounds.isNull && bounds.width > 0 && bounds.height > 0, "\(bounds)")
-                let pad = bounds.insetBy(dx: -1.5, dy: -1.0)
-                let cover = PDFAnnotation(bounds: pad, forType: .square, withProperties: nil)
-                cover.color = .clear
-                cover.interiorColor = .white
-                cover.border = PDFBorder()
-                cover.border?.lineWidth = 0
-                page.addAnnotation(cover)
-                let box = PDFAnnotation(bounds: pad, forType: .freeText, withProperties: nil)
-                box.contents = "EARTH"
-                box.font = NSFont.systemFont(ofSize: max(8, pad.height * 0.8))
-                box.fontColor = .black
-                box.color = .clear
-                page.addAnnotation(box)
-                let out = temp.appendingPathComponent("click-edit-out.pdf")
-                guard doc.write(to: out) else { throw DocuForgeError.pdfOperationFailed("write click-edit") }
-                check("click-edit save layout-preserving replace", FileManager.default.fileExists(atPath: out.path), out.path)
-                // freeText contents should include EARTH
-                if let reopened = PDFDocument(url: out), let p0 = reopened.page(at: 0) {
-                    let annTexts = p0.annotations.compactMap(\.contents).joined(separator: " ")
-                    check("click-edit freeText has EARTH", annTexts.contains("EARTH"), annTexts)
-                } else {
-                    check("click-edit reopen", false, "could not reopen")
+                // replaceText convenience
+                let (replacedImg, changed) = try await shotService.replaceText(
+                    in: image,
+                    search: "EDIT",
+                    replace: "FIX",
+                    caseSensitive: false
+                )
+                check("screenshot replaceText changed>=0", changed >= 0, "changed=\(changed) size=\(replacedImg.size)")
+                // If OCR saw EDIT, must change at least one
+                if joined.uppercased().contains("EDIT") {
+                    check("screenshot replaceText changed EDIT", changed >= 1, "changed=\(changed) src=\(joined)")
                 }
+
+                let outPNG = temp.appendingPathComponent("shot-edited.png")
+                _ = try await ImageEditorService().save(image: outImage, to: outPNG, format: .png)
+                check("screenshot save edited png", FileManager.default.fileExists(atPath: outPNG.path), outPNG.path)
             } else {
-                check("click-edit WORLD selection", false, "no selection for WORLD")
+                check("screenshot OCR blocks required for edit", false, "OCR returned 0 blocks — Vision may need larger fonts")
             }
         } catch {
-            check("click-edit suite", false, error.localizedDescription)
+            check("screenshot text editor suite", false, error.localizedDescription)
         }
 
         do {

@@ -2,10 +2,10 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import PDFKit
+import Combine
 import DocuForgeCore
 
-/// Document editor: open a PDF (or convert to PDF) and edit on the page —
-/// click existing words like Canva / iLovePDF, find-replace, screenshots.
+/// Document editor — PDF canvas + screenshot text rewrite (OCR).
 struct EditView: View {
     @EnvironmentObject private var app: AppModel
 
@@ -27,27 +27,32 @@ struct EditView: View {
     @State private var findText = ""
     @State private var replaceText = ""
     @State private var caseSensitive = false
-    @State private var matchCount = 0
 
-    // Image mode
+    // Image / screenshot text mode
     @State private var imageOriginal: NSImage?
     @State private var imageWorking: NSImage?
     @State private var imageFormat: DocumentFormat = .png
-    @State private var brightness: Double = 0
-    @State private var contrast: Double = 1
-    @State private var saturation: Double = 1
-    @State private var resizeWidth: Double = 0
-    @State private var resizeHeight: Double = 0
-    @State private var cropEnabled = false
     @State private var imageDirty = false
+    @State private var shotBlocks: [ScreenshotTextEditorService.TextBlock] = []
+    @State private var shotBusy = false
+    @State private var shotFind = ""
+    @State private var shotReplace = ""
+    @State private var shotStatus = ""
 
-    // Page image sheet
-    @State private var sheetImage: NSImage?
+    // PDF page image adjust sheet
     @State private var sheetBrightness: Double = 0
     @State private var sheetContrast: Double = 1
     @State private var sheetSaturation: Double = 1
-    @State private var sheetCrop: Bool = false
+    @State private var sheetCrop = false
     @State private var sheetPreview: NSImage?
+
+    // PDF screenshot-text sheet state
+    @State private var pdfShotBlocks: [ScreenshotTextEditorService.TextBlock] = []
+    @State private var pdfShotBusy = false
+    @State private var pdfShotFind = ""
+    @State private var pdfShotReplace = ""
+    @State private var pdfShotStatus = ""
+    @State private var pdfShotWorking: NSImage?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -59,9 +64,21 @@ struct EditView: View {
             Group {
                 switch mode {
                 case .none: emptyState
-                case .pdf: pdfCanvasWorkspace
+                case .pdf:
+                    if let session = pdfSessionHolder.session {
+                        // Critical: observe the session itself so click/find updates refresh UI
+                        PDFEditorWorkspace(
+                            session: session,
+                            statusMessage: $statusMessage,
+                            errorMessage: $errorMessage,
+                            onOpenScreenshotText: { openPDFScreenshotTextEditor() },
+                            onOpenPageImage: { openPageImageEditor() }
+                        )
+                    } else {
+                        Text("No PDF session").foregroundStyle(.secondary)
+                    }
                 case .text: textWorkspace
-                case .image: imageWorkspace
+                case .image: imageScreenshotWorkspace
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -74,6 +91,12 @@ struct EditView: View {
         )) {
             pageImageEditorSheet
         }
+        .sheet(isPresented: Binding(
+            get: { pdfSessionHolder.session?.showScreenshotTextEditor == true },
+            set: { if !$0 { pdfSessionHolder.session?.showScreenshotTextEditor = false } }
+        )) {
+            pdfScreenshotTextSheet
+        }
     }
 
     // MARK: - Toolbar
@@ -82,13 +105,9 @@ struct EditView: View {
         HStack(spacing: 10) {
             Label(modeTitle, systemImage: modeIcon)
                 .font(.headline)
-                .labelStyle(.titleAndIcon)
 
             if let name = sourceURL?.lastPathComponent {
-                Text(name)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                Text(name).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
 
             Spacer()
@@ -97,37 +116,29 @@ struct EditView: View {
                 Button {
                     session.rotateCurrentPage(90)
                     statusMessage = session.status
-                } label: {
-                    Image(systemName: "rotate.right")
-                }
+                } label: { Image(systemName: "rotate.right") }
                 .help("Rotate page")
 
                 Button {
                     session.insertBlankPage()
                     statusMessage = session.status
-                } label: {
-                    Image(systemName: "doc.badge.plus")
-                }
+                } label: { Image(systemName: "doc.badge.plus") }
                 .help("Insert blank page")
 
                 Button(role: .destructive) {
                     session.deleteCurrentPage()
                     statusMessage = session.status
-                } label: {
-                    Image(systemName: "trash")
-                }
+                } label: { Image(systemName: "trash") }
                 .help("Delete page")
             }
 
             if mode != .none {
                 Button("Close") { closeSession() }
                 Button("Save As…") { Task { await saveAs() } }
-                Button("Save") {
-                    Task { await save() }
-                }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut("s", modifiers: .command)
-                .disabled(mode == .none || isBusy)
+                Button("Save") { Task { await save() } }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut("s", modifiers: .command)
+                    .disabled(isBusy)
             } else {
                 Button("Open…") {
                     let urls = app.pickFiles(contentTypes: [.item], allowsMultiple: false)
@@ -146,7 +157,7 @@ struct EditView: View {
         case .none: return "Edit"
         case .pdf: return "PDF Editor"
         case .text: return "Text Editor"
-        case .image: return "Image Editor"
+        case .image: return "Screenshot text editor"
         }
     }
 
@@ -155,7 +166,7 @@ struct EditView: View {
         case .none: return "pencil.and.outline"
         case .pdf: return "doc.richtext"
         case .text: return "doc.plaintext"
-        case .image: return "photo"
+        case .image: return "text.viewfinder"
         }
     }
 
@@ -178,8 +189,8 @@ struct EditView: View {
     private var emptyState: some View {
         VStack(spacing: 20) {
             DropZoneView(
-                title: "Open a document to edit",
-                subtitle: "PDFs open on a live canvas — click a word to change it (like Canva / iLovePDF). Images open for screenshot edits. Office/iWork convert to PDF for layout-safe editing.",
+                title: "Open a file to edit",
+                subtitle: "PDF: click words or use Find/Replace. Screenshot / PNG / JPEG: detect text with OCR and rewrite words inside the image. Office files open as PDF for layout-safe editing.",
                 systemImage: "doc.badge.plus",
                 allowedTypes: [.item],
                 allowsMultiple: false
@@ -189,11 +200,11 @@ struct EditView: View {
             .frame(maxWidth: 640)
 
             HStack(spacing: 16) {
-                tip("Click to edit words", "Use Edit word → click any word on the page → change it → Apply. The rest of the layout stays.")
-                tip("Find & replace all", "Change every match across pages without rebuilding the PDF design.")
-                tip("Screenshots stay PDF", "Edit a page as an image or paste ⌘⇧4 screenshots — the file remains PDF.")
+                tip("Main feature: text in screenshots", "Paste or open a screenshot → Detect text → change any line → Apply. Works on pixels, not only PDF text layers.")
+                tip("PDF native text", "If the PDF has a text layer: Edit word + click, or Find → Replace All.")
+                tip("Scanned PDFs", "No text layer? Use “Edit text in screenshot” on the page — OCR rewrites the words in the page image.")
             }
-            .frame(maxWidth: 960)
+            .frame(maxWidth: 980)
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -209,380 +220,407 @@ struct EditView: View {
         .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
     }
 
-    // MARK: - PDF canvas workspace
+    // MARK: - Image / screenshot workspace (MAIN FEATURE)
 
-    private var pdfCanvasWorkspace: some View {
-        VStack(spacing: 0) {
-            findReplaceBar
-            toolStrip
-            if pdfSessionHolder.session?.selectedHit != nil {
-                selectedTextEditorBar
-            }
-            HStack(spacing: 0) {
-                pageThumbs
-                Divider()
-                if let session = pdfSessionHolder.session {
-                    PDFCanvasView(session: session)
+    private var imageScreenshotWorkspace: some View {
+        HSplitView {
+            VStack(spacing: 12) {
+                if let imageWorking {
+                    Image(nsImage: imageWorking)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            Text("Tip: select “Edit word”, click the text on the page, type the new word, press Apply. Screenshots: use Screenshot tool or Paste — document stays PDF.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .padding(8)
-        }
-    }
-
-    private var findReplaceBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-            TextField("Find in document", text: Binding(
-                get: { pdfSessionHolder.session?.findQuery ?? "" },
-                set: { pdfSessionHolder.session?.findQuery = $0 }
-            ))
-            .textFieldStyle(.roundedBorder)
-            .frame(maxWidth: 180)
-
-            TextField("Replace with", text: Binding(
-                get: { pdfSessionHolder.session?.replaceQuery ?? "" },
-                set: { pdfSessionHolder.session?.replaceQuery = $0 }
-            ))
-            .textFieldStyle(.roundedBorder)
-            .frame(maxWidth: 180)
-
-            Toggle("Aa", isOn: Binding(
-                get: { pdfSessionHolder.session?.caseSensitive ?? false },
-                set: { pdfSessionHolder.session?.caseSensitive = $0 }
-            ))
-            .toggleStyle(.button)
-            .help("Case sensitive")
-
-            Button("Find") {
-                pdfSessionHolder.session?.refreshFind()
-                statusMessage = pdfSessionHolder.session?.status ?? ""
-            }
-            Button("Next") {
-                if let s = pdfSessionHolder.session, !s.findHits.isEmpty {
-                    s.findIndex = (s.findIndex + 1) % s.findHits.count
-                    let hit = s.findHits[s.findIndex]
-                    s.currentPageIndex = hit.page
-                    statusMessage = "Match \(s.findIndex + 1) of \(s.findHits.count)"
-                }
-            }
-            Button("Replace All") {
-                pdfSessionHolder.session?.replaceAllPreservingLayout()
-                statusMessage = pdfSessionHolder.session?.status ?? ""
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled((pdfSessionHolder.session?.findQuery ?? "").isEmpty)
-
-            if let n = pdfSessionHolder.session?.matchCount, n > 0 {
-                Text("\(n) matches").font(.caption).foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            Button {
-                pdfSessionHolder.session?.pasteScreenshotReplacingPage()
-                statusMessage = pdfSessionHolder.session?.status ?? ""
-            } label: {
-                Label("Paste screenshot", systemImage: "doc.on.clipboard")
-            }
-            .help("Replace current page with clipboard image (⌘⇧4). Stays PDF.")
-
-            Button {
-                pdfSessionHolder.session?.pasteScreenshotAsNewPage()
-                statusMessage = pdfSessionHolder.session?.status ?? ""
-            } label: {
-                Label("Insert shot", systemImage: "plus.rectangle.on.rectangle")
-            }
-            .help("Insert clipboard image as a new PDF page.")
-
-            Button {
-                openScreenshotEditor()
-            } label: {
-                Label("Edit page image", systemImage: "photo.on.rectangle")
-            }
-            .help("Open current page as a screenshot for brightness/crop, then apply back to the PDF page.")
-        }
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.9))
-    }
-
-    private var toolStrip: some View {
-        Group {
-            if let session = pdfSessionHolder.session {
-                VStack(alignment: .leading, spacing: 6) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(LivePDFSession.Tool.allCases) { tool in
-                                Button {
-                                    session.tool = tool
-                                    if tool != .editText {
-                                        // keep selection if still editing, but clear flash noise for other tools
-                                    }
-                                } label: {
-                                    Label(tool.title, systemImage: tool.systemImage)
-                                        .labelStyle(.titleAndIcon)
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 6)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: 8)
-                                                .fill(session.tool == tool ? Color.accentColor.opacity(0.22) : Color(nsColor: .controlBackgroundColor))
-                                        )
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 8)
-                                                .strokeBorder(session.tool == tool ? Color.accentColor : Color.primary.opacity(0.12))
+                        .padding(8)
+                        .background(Color(nsColor: .controlBackgroundColor))
+                        .overlay(alignment: .topLeading) {
+                            // Draw detected boxes
+                            GeometryReader { geo in
+                                let size = imageWorking.size
+                                let scale = min(geo.size.width / max(size.width, 1), geo.size.height / max(size.height, 1))
+                                let drawW = size.width * scale
+                                let drawH = size.height * scale
+                                let ox = (geo.size.width - drawW) / 2
+                                let oy = (geo.size.height - drawH) / 2
+                                ForEach(shotBlocks) { block in
+                                    let r = block.pixelBounds
+                                    Rectangle()
+                                        .stroke(block.isModified ? Color.orange : Color.accentColor, lineWidth: 1.5)
+                                        .frame(width: r.width * scale, height: r.height * scale)
+                                        .position(
+                                            x: ox + (r.midX) * scale,
+                                            y: oy + (r.midY) * scale
                                         )
                                 }
-                                .buttonStyle(.plain)
-                                .help(toolHint(tool))
                             }
+                            .padding(8)
                         }
-                    }
-
-                    HStack(spacing: 12) {
-                        Text(toolHint(session.tool))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                        if session.tool == .editText {
-                            Picker("Pick", selection: Binding(
-                                get: { session.textPickMode },
-                                set: { session.textPickMode = $0 }
-                            )) {
-                                ForEach(LivePDFSession.TextPickMode.allCases) { m in
-                                    Text(m.title).tag(m)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .frame(width: 140)
-                            .help("Click selects a single word, or the whole line.")
-                        }
-
-                        if session.tool == .addText {
-                            TextField("Text to place", text: Binding(
-                                get: { session.textBoxDraft },
-                                set: { session.textBoxDraft = $0 }
-                            ))
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 200)
-                        }
-
-                        if session.tool == .stamp {
-                            TextField("Stamp text", text: Binding(
-                                get: { session.stampDraft },
-                                set: { session.stampDraft = $0 }
-                            ))
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 140)
-                        }
-                    }
+                } else {
+                    ContentUnavailableView("No image", systemImage: "photo", description: Text("Paste a screenshot or open an image."))
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color(nsColor: .windowBackgroundColor))
             }
-        }
-    }
+            .frame(minWidth: 360)
 
-    /// Panel that appears after clicking existing PDF text — change the word and Apply.
-    private var selectedTextEditorBar: some View {
-        Group {
-            if let session = pdfSessionHolder.session, let hit = session.selectedHit {
-                HStack(spacing: 12) {
-                    Image(systemName: "character.cursor.ibeam")
-                        .foregroundStyle(Color.accentColor)
-                        .font(.title3)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Edit text inside screenshot").font(.title3.weight(.bold))
+                Text("This reads words drawn in the picture (OCR), then covers the old pixels and writes your new text. The file stays an image (or paste back into a PDF page).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Edit existing text on page \(hit.pageIndex + 1)")
-                            .font(.caption.weight(.semibold))
-                        Text("Original: “\(hit.originalText)”")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                    .frame(minWidth: 160, maxWidth: 280, alignment: .leading)
-
-                    TextField("New text", text: Binding(
-                        get: { session.editDraft },
-                        set: { session.editDraft = $0 }
-                    ))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(minWidth: 180, maxWidth: 360)
-                    .onSubmit {
-                        session.applySelectedTextEdit()
-                        statusMessage = session.status
-                    }
-
-                    Button("Apply change") {
-                        session.applySelectedTextEdit()
-                        statusMessage = session.status
+                HStack {
+                    Button {
+                        pasteScreenshotToImageMode()
+                    } label: {
+                        Label("Paste screenshot", systemImage: "doc.on.clipboard")
                     }
                     .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.return, modifiers: .command)
 
-                    Button("Erase") {
-                        session.eraseSelectedText()
-                        statusMessage = session.status
+                    Button {
+                        Task { await detectShotText() }
+                    } label: {
+                        Label(shotBusy ? "Detecting…" : "Detect text", systemImage: "text.viewfinder")
                     }
-                    .help("Cover the selected text with white (layout kept).")
+                    .disabled(imageWorking == nil || shotBusy)
 
-                    Button("Cancel") {
-                        session.clearTextSelection()
-                        statusMessage = "Selection cleared."
+                    Button {
+                        Task { await applyShotEdits() }
+                    } label: {
+                        Label("Apply text changes", systemImage: "checkmark.circle")
                     }
-
-                    Spacer()
+                    .buttonStyle(.borderedProminent)
+                    .disabled(shotBlocks.allSatisfy { !$0.isModified } || shotBusy)
                 }
-                .padding(12)
-                .background(
-                    RoundedRectangle(cornerRadius: 0)
-                        .fill(Color.accentColor.opacity(0.10))
-                )
-                .overlay(alignment: .top) {
-                    Rectangle().fill(Color.accentColor).frame(height: 2)
-                }
-            }
-        }
-    }
 
-    private var pageThumbs: some View {
-        Group {
-            if let session = pdfSessionHolder.session {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(0..<session.pageCount, id: \.self) { i in
-                            Button {
-                                session.goToPage(i)
-                            } label: {
-                                Text("\(i + 1)")
-                                    .font(.caption.weight(.semibold))
-                                    .frame(width: 44, height: 56)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .fill(session.currentPageIndex == i ? Color.accentColor.opacity(0.25) : Color(nsColor: .controlBackgroundColor))
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .strokeBorder(session.currentPageIndex == i ? Color.accentColor : Color.primary.opacity(0.15))
-                                    )
+                HStack {
+                    TextField("Find in detected text", text: $shotFind)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Replace with", text: $shotReplace)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Replace in list") {
+                        applyShotFindReplaceToBlocks()
+                    }
+                    .disabled(shotFind.isEmpty || shotBlocks.isEmpty)
+                }
+
+                if !shotStatus.isEmpty {
+                    Text(shotStatus).font(.caption).foregroundStyle(.secondary)
+                }
+
+                if shotBlocks.isEmpty {
+                    Text("Click Detect text after pasting a screenshot. Each line becomes editable below.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("\(shotBlocks.count) text region(s) — edit any field, then Apply text changes")
+                        .font(.caption.weight(.semibold))
+                    List {
+                        ForEach($shotBlocks) { $block in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("OCR: \(block.originalText)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                TextField("New text", text: $block.editedText)
+                                    .textFieldStyle(.roundedBorder)
                             }
-                            .buttonStyle(.plain)
+                            .padding(.vertical, 2)
                         }
                     }
-                    .padding(8)
+                    .listStyle(.inset)
                 }
-                .frame(width: 64)
-                .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                Spacer(minLength: 0)
             }
+            .padding(16)
+            .frame(minWidth: 340, idealWidth: 380)
+        }
+        .padding(8)
+    }
+
+    // MARK: - Text workspace
+
+    private var textWorkspace: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                TextField("Find", text: $findText).textFieldStyle(.roundedBorder).frame(maxWidth: 160)
+                TextField("Replace", text: $replaceText).textFieldStyle(.roundedBorder).frame(maxWidth: 160)
+                Toggle("Aa", isOn: $caseSensitive).toggleStyle(.button)
+                Button("Replace All") {
+                    Task {
+                        let r = await app.textEditor.searchReplace(
+                            text: textBody, search: findText, replace: replaceText, caseSensitive: caseSensitive
+                        )
+                        textBody = r.output
+                        textDirty = r.replacedCount > 0
+                        statusMessage = "Replaced \(r.replacedCount) occurrence(s)."
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                Spacer()
+            }
+            .padding(10)
+            if let note = textDocument?.limitationNote {
+                Text(note).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 12)
+            }
+            TextEditor(text: $textBody)
+                .font(.system(size: 14))
+                .onChange(of: textBody) { _, _ in textDirty = true }
         }
     }
 
-    private func toolHint(_ tool: LivePDFSession.Tool) -> String {
-        switch tool {
-        case .select:
-            return "Select: drag to highlight text for reading/copy. Switch to Edit word to change text."
-        case .editText:
-            return "Edit word: CLICK an existing word on the page → it appears below → type new text → Apply. Like Canva / iLovePDF."
-        case .addText:
-            return "Add text: click empty space to place a new text box (does not change existing words)."
-        case .highlight:
-            return "Highlight: click a word to highlight it."
-        case .underline:
-            return "Underline: click a word to underline it."
-        case .strike:
-            return "Strike: click a word to strike it through."
-        case .signature:
-            return "Sign: click where the signature should appear."
-        case .stamp:
-            return "Stamp: click to place APPROVED / custom stamp."
-        case .screenshot:
-            return "Screenshot: click the page to open brightness/crop editor, or use Paste screenshot. File stays PDF."
-        }
-    }
-
-    private func openScreenshotEditor() {
-        pdfSessionHolder.session?.beginEditPageAsImage()
-        sheetImage = pdfSessionHolder.session?.pageImageForEdit
-        sheetBrightness = 0
-        sheetContrast = 1
-        sheetSaturation = 1
-        sheetCrop = false
-        sheetPreview = sheetImage
-        Task { await refreshSheetPreview() }
-    }
-
-    // MARK: - Page image editor sheet (screenshots)
+    // MARK: - PDF sheets
 
     private var pageImageEditorSheet: some View {
         VStack(spacing: 16) {
-            Text("Edit page as screenshot")
-                .font(.title2.weight(.bold))
-            Text("Adjust this page’s image. Applying replaces only this page; other pages stay original PDF. The document format remains PDF.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 520)
+            Text("Adjust page image").font(.title2.weight(.bold))
+            Text("Brightness / crop only. To change words inside a screenshot page, cancel and use “Edit text in screenshot”.")
+                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
 
-            Group {
-                if let preview = sheetPreview ?? sheetImage ?? pdfSessionHolder.session?.pageImageForEdit {
-                    Image(nsImage: preview)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxHeight: 380)
-                        .padding(8)
-                        .background(Color(nsColor: .controlBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.12)))
-                } else {
-                    Text("No page image loaded.")
-                        .foregroundStyle(.secondary)
-                        .frame(height: 200)
-                }
+            if let preview = sheetPreview ?? pdfSessionHolder.session?.pageImageForEdit {
+                Image(nsImage: preview)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxHeight: 360)
             }
 
-            VStack(spacing: 10) {
-                HStack { Text("Brightness").frame(width: 90, alignment: .leading); Slider(value: $sheetBrightness, in: -0.4...0.4) }
-                HStack { Text("Contrast").frame(width: 90, alignment: .leading); Slider(value: $sheetContrast, in: 0.6...1.5) }
-                HStack { Text("Saturation").frame(width: 90, alignment: .leading); Slider(value: $sheetSaturation, in: 0...2) }
-                Toggle("Crop 8% margins", isOn: $sheetCrop)
-            }
-            .onChange(of: sheetBrightness) { _, _ in Task { await refreshSheetPreview() } }
-            .onChange(of: sheetContrast) { _, _ in Task { await refreshSheetPreview() } }
-            .onChange(of: sheetSaturation) { _, _ in Task { await refreshSheetPreview() } }
-            .onChange(of: sheetCrop) { _, _ in Task { await refreshSheetPreview() } }
+            HStack { Text("Brightness"); Slider(value: $sheetBrightness, in: -0.4...0.4) }
+            HStack { Text("Contrast"); Slider(value: $sheetContrast, in: 0.6...1.5) }
+            HStack { Text("Saturation"); Slider(value: $sheetSaturation, in: 0...2) }
+            Toggle("Crop 8% margins", isOn: $sheetCrop)
+                .onChange(of: sheetBrightness) { _, _ in Task { await refreshSheetPreview() } }
+                .onChange(of: sheetContrast) { _, _ in Task { await refreshSheetPreview() } }
+                .onChange(of: sheetSaturation) { _, _ in Task { await refreshSheetPreview() } }
+                .onChange(of: sheetCrop) { _, _ in Task { await refreshSheetPreview() } }
 
             HStack {
-                Button("Cancel") {
-                    pdfSessionHolder.session?.showPageImageEditor = false
-                }
+                Button("Cancel") { pdfSessionHolder.session?.showPageImageEditor = false }
                 Spacer()
-                Button("Paste clipboard instead") {
-                    pdfSessionHolder.session?.pasteScreenshotReplacingPage()
-                    statusMessage = pdfSessionHolder.session?.status ?? ""
-                }
-                Button("Apply to this PDF page") {
-                    Task { await applySheetImage() }
-                }
-                .buttonStyle(.borderedProminent)
+                Button("Apply to page") { Task { await applySheetImage() } }
+                    .buttonStyle(.borderedProminent)
             }
         }
         .padding(24)
-        .frame(minWidth: 680, minHeight: 640)
+        .frame(minWidth: 640, minHeight: 560)
         .onAppear {
-            sheetImage = pdfSessionHolder.session?.pageImageForEdit
-            sheetPreview = sheetImage
+            sheetPreview = pdfSessionHolder.session?.pageImageForEdit
             Task { await refreshSheetPreview() }
         }
     }
 
+    private var pdfScreenshotTextSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Edit text in this page (screenshot / OCR)")
+                .font(.title2.weight(.bold))
+            Text("Detects words drawn on the page image, lets you change them, then writes the page back into the PDF. Other pages stay untouched.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            HStack(alignment: .top, spacing: 16) {
+                if let img = pdfShotWorking ?? pdfSessionHolder.session?.pageImageForEdit {
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: 420, maxHeight: 480)
+                        .border(Color.primary.opacity(0.12))
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Button {
+                            Task { await detectPDFShotText() }
+                        } label: {
+                            Label(pdfShotBusy ? "Detecting…" : "Detect text", systemImage: "text.viewfinder")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(pdfShotBusy)
+
+                        Button {
+                            Task { await applyPDFShotEdits() }
+                        } label: {
+                            Label("Apply to PDF page", systemImage: "checkmark.circle.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(pdfShotBlocks.allSatisfy { !$0.isModified } || pdfShotBusy)
+                    }
+
+                    HStack {
+                        TextField("Find", text: $pdfShotFind).textFieldStyle(.roundedBorder)
+                        TextField("Replace", text: $pdfShotReplace).textFieldStyle(.roundedBorder)
+                        Button("Replace in list") {
+                            for i in pdfShotBlocks.indices {
+                                if pdfShotBlocks[i].editedText.range(of: pdfShotFind, options: .caseInsensitive) != nil {
+                                    pdfShotBlocks[i].editedText = pdfShotBlocks[i].editedText.replacingOccurrences(
+                                        of: pdfShotFind, with: pdfShotReplace, options: .caseInsensitive
+                                    )
+                                }
+                            }
+                        }
+                        .disabled(pdfShotFind.isEmpty)
+                    }
+
+                    if !pdfShotStatus.isEmpty {
+                        Text(pdfShotStatus).font(.caption).foregroundStyle(.secondary)
+                    }
+
+                    if pdfShotBlocks.isEmpty {
+                        Text("Press Detect text to list every word/line found on this page image.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        List {
+                            ForEach($pdfShotBlocks) { $block in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(block.originalText).font(.caption2).foregroundStyle(.secondary)
+                                    TextField("New text", text: $block.editedText).textFieldStyle(.roundedBorder)
+                                }
+                            }
+                        }
+                        .frame(minHeight: 280)
+                    }
+                }
+                .frame(minWidth: 320)
+            }
+
+            HStack {
+                Button("Cancel") {
+                    pdfSessionHolder.session?.showScreenshotTextEditor = false
+                }
+                Spacer()
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 900, minHeight: 620)
+        .onAppear {
+            pdfShotWorking = pdfSessionHolder.session?.pageImageForEdit
+            pdfShotBlocks = []
+            pdfShotStatus = "Ready — press Detect text."
+            Task { await detectPDFShotText() }
+        }
+    }
+
+    // MARK: - Actions
+
+    private func openPageImageEditor() {
+        pdfSessionHolder.session?.beginEditPageAsImage()
+        sheetBrightness = 0; sheetContrast = 1; sheetSaturation = 1; sheetCrop = false
+        sheetPreview = pdfSessionHolder.session?.pageImageForEdit
+    }
+
+    private func openPDFScreenshotTextEditor() {
+        pdfSessionHolder.session?.beginScreenshotTextEdit()
+        pdfShotWorking = pdfSessionHolder.session?.pageImageForEdit
+        pdfShotBlocks = []
+        pdfShotStatus = ""
+    }
+
+    private func pasteScreenshotToImageMode() {
+        if let img = NSImage(pasteboard: .general) {
+            Task {
+                let norm = await app.screenshotText.normalizedImage(img)
+                await MainActor.run {
+                    imageOriginal = norm
+                    imageWorking = norm
+                    imageDirty = true
+                    imageFormat = .png
+                    shotBlocks = []
+                    shotStatus = "Pasted screenshot. Press Detect text."
+                    statusMessage = "Screenshot pasted."
+                    errorMessage = ""
+                }
+                await detectShotText()
+            }
+        } else {
+            errorMessage = "Clipboard has no image. Use ⌘⇧4 then copy the capture."
+        }
+    }
+
+    private func detectShotText() async {
+        guard let image = imageWorking else { return }
+        shotBusy = true
+        defer { shotBusy = false }
+        do {
+            let norm = await app.screenshotText.normalizedImage(image)
+            imageWorking = norm
+            let result = try await app.screenshotText.detectText(in: norm)
+            shotBlocks = result.blocks
+            shotStatus = result.blocks.isEmpty
+                ? "No text found. Try a sharper screenshot."
+                : "Found \(result.blocks.count) region(s), confidence \(Int(result.averageConfidence * 100))%. Edit below, then Apply."
+            statusMessage = shotStatus
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func applyShotFindReplaceToBlocks() {
+        guard !shotFind.isEmpty else { return }
+        var n = 0
+        for i in shotBlocks.indices {
+            if shotBlocks[i].editedText.range(of: shotFind, options: .caseInsensitive) != nil {
+                shotBlocks[i].editedText = shotBlocks[i].editedText.replacingOccurrences(
+                    of: shotFind, with: shotReplace, options: .caseInsensitive
+                )
+                n += 1
+            }
+        }
+        shotStatus = "Updated \(n) line(s) in the list — press Apply text changes."
+    }
+
+    private func applyShotEdits() async {
+        guard let image = imageWorking else { return }
+        shotBusy = true
+        defer { shotBusy = false }
+        do {
+            let out = try await app.screenshotText.applyEdits(image: image, blocks: shotBlocks)
+            imageWorking = out
+            imageDirty = true
+            // Re-detect so boxes match new image
+            let result = try await app.screenshotText.detectText(in: out)
+            shotBlocks = result.blocks
+            shotStatus = "Applied text changes to screenshot. Save when ready."
+            statusMessage = shotStatus
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func detectPDFShotText() async {
+        guard let image = pdfSessionHolder.session?.pageImageForEdit ?? pdfShotWorking else {
+            pdfShotStatus = "No page image loaded."
+            return
+        }
+        pdfShotBusy = true
+        defer { pdfShotBusy = false }
+        do {
+            let result = try await app.screenshotText.detectText(in: image)
+            pdfShotBlocks = result.blocks
+            pdfShotWorking = image
+            pdfShotStatus = result.blocks.isEmpty
+                ? "No text found on this page image."
+                : "Found \(result.blocks.count) region(s). Edit text, then Apply to PDF page."
+        } catch {
+            pdfShotStatus = error.localizedDescription
+        }
+    }
+
+    private func applyPDFShotEdits() async {
+        guard let session = pdfSessionHolder.session,
+              let base = session.pageImageForEdit ?? pdfShotWorking else { return }
+        pdfShotBusy = true
+        defer { pdfShotBusy = false }
+        do {
+            let out = try await app.screenshotText.applyEdits(image: base, blocks: pdfShotBlocks)
+            pdfShotWorking = out
+            session.applyEditedPageImage(out)
+            statusMessage = session.status
+            pdfShotStatus = "Applied to PDF page \(session.currentPageIndex + 1)."
+        } catch {
+            errorMessage = error.localizedDescription
+            pdfShotStatus = error.localizedDescription
+        }
+    }
+
     private func refreshSheetPreview() async {
-        guard let base = sheetImage ?? pdfSessionHolder.session?.pageImageForEdit else { return }
+        guard let base = pdfSessionHolder.session?.pageImageForEdit else { return }
         do {
             let crop: CGRect? = sheetCrop ? CGRect(x: 0.08, y: 0.08, width: 0.84, height: 0.84) : nil
             let edited = try await app.imageEditor.apply(
@@ -615,93 +653,6 @@ struct EditView: View {
         }
     }
 
-    // MARK: - Text workspace
-
-    private var textWorkspace: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                TextField("Find", text: $findText).textFieldStyle(.roundedBorder).frame(maxWidth: 160)
-                TextField("Replace", text: $replaceText).textFieldStyle(.roundedBorder).frame(maxWidth: 160)
-                Toggle("Aa", isOn: $caseSensitive).toggleStyle(.button)
-                Button("Replace All") {
-                    Task {
-                        let r = await app.textEditor.searchReplace(
-                            text: textBody, search: findText, replace: replaceText, caseSensitive: caseSensitive
-                        )
-                        textBody = r.output
-                        textDirty = r.replacedCount > 0
-                        matchCount = r.replacedCount
-                        statusMessage = "Replaced \(r.replacedCount) occurrence(s)."
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                Spacer()
-            }
-            .padding(10)
-            if let note = textDocument?.limitationNote {
-                Text(note).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 12)
-            }
-            TextEditor(text: $textBody)
-                .font(.system(size: 14))
-                .onChange(of: textBody) { _, _ in textDirty = true }
-        }
-    }
-
-    // MARK: - Image workspace
-
-    private var imageWorkspace: some View {
-        HStack(alignment: .top, spacing: 20) {
-            if let imageWorking {
-                Image(nsImage: imageWorking)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 520, maxHeight: 480)
-                    .padding(12)
-                    .background(Color(nsColor: .controlBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-            }
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Screenshot / image tools").font(.headline)
-                Text("Yes — you can edit screenshots here. Paste from clipboard (⌘⇧4 → copy), adjust, save as PNG/JPEG.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button {
-                    if let img = NSImage(pasteboard: .general) {
-                        imageOriginal = img; imageWorking = img; imageDirty = true
-                        imageFormat = .png
-                        statusMessage = "Pasted screenshot."
-                    } else {
-                        errorMessage = "Clipboard has no image. Capture with ⌘⇧4 first."
-                    }
-                } label: {
-                    Label("Paste screenshot", systemImage: "doc.on.clipboard")
-                }
-                .buttonStyle(.borderedProminent)
-
-                HStack { Text("Brightness"); Slider(value: $brightness, in: -0.5...0.5) }
-                HStack { Text("Contrast"); Slider(value: $contrast, in: 0.5...1.5) }
-                HStack { Text("Saturation"); Slider(value: $saturation, in: 0...2) }
-                Toggle("Crop 10% margins", isOn: $cropEnabled)
-                HStack {
-                    TextField("W", value: $resizeWidth, format: .number).frame(width: 70).textFieldStyle(.roundedBorder)
-                    Text("×")
-                    TextField("H", value: $resizeHeight, format: .number).frame(width: 70).textFieldStyle(.roundedBorder)
-                }
-                Button("Apply") { Task { await applyImageEdits() } }
-                    .buttonStyle(.borderedProminent)
-                Button("Reset") {
-                    imageWorking = imageOriginal
-                    brightness = 0; contrast = 1; saturation = 1; cropEnabled = false
-                    imageDirty = false
-                }
-            }
-            .frame(width: 280)
-            Spacer()
-        }
-        .padding(20)
-    }
-
     // MARK: - Open / save
 
     private func open(_ url: URL) async {
@@ -712,20 +663,25 @@ struct EditView: View {
             if format == .pdf {
                 let session = try LivePDFSession.open(url: url)
                 session.tool = .editText
-                pdfSessionHolder.session = session
+                pdfSessionHolder.attach(session)
                 sourceURL = url
                 mode = .pdf
-                statusMessage = "PDF on canvas. Tool is “Edit word”: click a word, change it, press Apply. Format stays PDF."
+                if session.currentPageHasTextLayer {
+                    statusMessage = "PDF opened. Edit word is active — click a word, edit in the blue bar, Apply. Or Find → Replace All. For scans use Edit text in screenshot."
+                } else {
+                    statusMessage = "PDF has little/no text layer (likely scan/screenshot pages). Use “Edit text in screenshot” to change words."
+                }
             } else if format.isImage {
                 let img = try await app.imageEditor.load(url: url)
                 imageOriginal = img
                 imageWorking = img
                 imageFormat = format
-                resizeWidth = Double(img.size.width)
-                resizeHeight = Double(img.size.height)
+                imageDirty = false
+                shotBlocks = []
                 sourceURL = url
                 mode = .image
-                statusMessage = "Image / screenshot opened. Adjust and Save."
+                statusMessage = "Image opened. Press Detect text to edit words inside the screenshot."
+                Task { await detectShotText() }
             } else if await app.textEditor.isEditableTextFormat(format) {
                 let doc = try await app.textEditor.open(url: url)
                 textDocument = doc
@@ -733,9 +689,9 @@ struct EditView: View {
                 textDirty = false
                 sourceURL = url
                 mode = .text
-                statusMessage = "Text document opened. Use Find / Replace All for wording."
+                statusMessage = "Text document opened."
             } else if format.isIWork || format.isOfficeOpenXML || format.isLegacyOffice || format.isOpenDocument {
-                statusMessage = "Preparing a layout-safe PDF for visual editing…"
+                statusMessage = "Converting to PDF for editing…"
                 let dir = try app.makeOutputDirectory(named: "EditOpen")
                 let result = try await app.conversion.convert(url: url, to: .pdf, outputDirectory: dir)
                 guard let pdfURL = result.outputURLs.first else {
@@ -743,11 +699,10 @@ struct EditView: View {
                 }
                 let session = try LivePDFSession.open(url: pdfURL)
                 session.tool = .editText
-                pdfSessionHolder.session = session
+                pdfSessionHolder.attach(session)
                 sourceURL = pdfURL
                 mode = .pdf
-                let notes = result.notes.joined(separator: " ")
-                statusMessage = "Opened \(format.displayName) as PDF for canvas editing. Click words with Edit word. \(notes)"
+                statusMessage = "Opened \(format.displayName) as PDF. Click words or use screenshot text editor for image content."
             } else {
                 errorMessage = "Can’t open \(format.displayName) for editing. Convert to PDF first."
             }
@@ -757,9 +712,10 @@ struct EditView: View {
     }
 
     private func closeSession() {
-        pdfSessionHolder.session = nil
+        pdfSessionHolder.attach(nil)
         textDocument = nil; textBody = ""; textDirty = false
         imageOriginal = nil; imageWorking = nil; imageDirty = false
+        shotBlocks = []
         sourceURL = nil; mode = .none
         statusMessage = ""; errorMessage = ""
     }
@@ -790,7 +746,7 @@ struct EditView: View {
                     sourceURL = png
                 }
                 imageDirty = false
-                statusMessage = "Saved image."
+                statusMessage = "Saved screenshot/image."
             case .none: break
             }
         } catch {
@@ -826,28 +782,271 @@ struct EditView: View {
             errorMessage = error.localizedDescription
         }
     }
+}
 
-    private func applyImageEdits() async {
-        guard let original = imageOriginal else { return }
-        do {
-            let crop: CGRect? = cropEnabled ? CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8) : nil
-            let size: CGSize? = (resizeWidth > 0 && resizeHeight > 0) ? CGSize(width: resizeWidth, height: resizeHeight) : nil
-            imageWorking = try await app.imageEditor.apply(
-                image: original,
-                cropNormalized: crop,
-                targetSize: size,
-                adjustments: .init(brightness: brightness, contrast: contrast, saturation: saturation)
-            )
-            imageDirty = true
-            statusMessage = "Applied image edits."
-        } catch {
-            errorMessage = error.localizedDescription
+// MARK: - PDF workspace (observes session)
+
+private struct PDFEditorWorkspace: View {
+    @ObservedObject var session: LivePDFSession
+    @Binding var statusMessage: String
+    @Binding var errorMessage: String
+    var onOpenScreenshotText: () -> Void
+    var onOpenPageImage: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Find / replace
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                TextField("Find", text: $session.findQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 160)
+                TextField("Replace with", text: $session.replaceQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 160)
+                Toggle("Aa", isOn: $session.caseSensitive)
+                    .toggleStyle(.button)
+                Button("Find") {
+                    session.refreshFind()
+                    statusMessage = session.status
+                }
+                Button("Next") {
+                    session.goToNextMatch()
+                    statusMessage = session.status
+                }
+                Button("Replace All") {
+                    session.replaceAllPreservingLayout()
+                    statusMessage = session.status
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(session.findQuery.isEmpty)
+
+                if session.matchCount > 0 {
+                    Text("\(session.matchCount) matches")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    onOpenScreenshotText()
+                } label: {
+                    Label("Edit text in screenshot", systemImage: "text.viewfinder")
+                }
+                .buttonStyle(.borderedProminent)
+                .help("Main feature: OCR + rewrite words on the page image (scans & screenshots).")
+
+                Button {
+                    session.pasteScreenshotReplacingPage()
+                    statusMessage = session.status
+                } label: {
+                    Label("Paste shot", systemImage: "doc.on.clipboard")
+                }
+
+                Button {
+                    onOpenPageImage()
+                } label: {
+                    Label("Adjust page", systemImage: "slider.horizontal.3")
+                }
+            }
+            .padding(10)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.95))
+
+            // Tools
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(LivePDFSession.Tool.allCases) { tool in
+                        Button {
+                            session.tool = tool
+                        } label: {
+                            Label(tool.title, systemImage: tool.systemImage)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(session.tool == tool ? Color.accentColor.opacity(0.22) : Color(nsColor: .controlBackgroundColor))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .strokeBorder(session.tool == tool ? Color.accentColor : Color.primary.opacity(0.12))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+
+            HStack {
+                Text(toolHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if session.tool == .editText {
+                    Picker("Pick", selection: $session.textPickMode) {
+                        ForEach(LivePDFSession.TextPickMode.allCases) { m in
+                            Text(m.title).tag(m)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 140)
+                }
+                if session.tool == .addText {
+                    TextField("Text to place", text: $session.textBoxDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 180)
+                }
+                if session.tool == .stamp {
+                    TextField("Stamp", text: $session.stampDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 120)
+                }
+
+                if !session.currentPageHasTextLayer {
+                    Text("No text layer on page \(session.currentPageIndex + 1)")
+                        .font(.caption2)
+                        .padding(4)
+                        .background(Color.orange.opacity(0.2))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+
+            // Selected word editor
+            if let hit = session.selectedHit {
+                HStack(spacing: 12) {
+                    Image(systemName: "character.cursor.ibeam")
+                        .foregroundStyle(Color.accentColor)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Editing page \(hit.pageIndex + 1)")
+                            .font(.caption.weight(.semibold))
+                        Text("Was: “\(hit.originalText)”")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    TextField("New text", text: $session.editDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 180, maxWidth: 360)
+                        .onSubmit {
+                            session.applySelectedTextEdit()
+                            statusMessage = session.status
+                        }
+                    Button("Apply change") {
+                        session.applySelectedTextEdit()
+                        statusMessage = session.status
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    Button("Erase") {
+                        session.eraseSelectedText()
+                        statusMessage = session.status
+                    }
+                    Button("Cancel") {
+                        session.clearTextSelection()
+                    }
+                    Spacer()
+                }
+                .padding(12)
+                .background(Color.accentColor.opacity(0.12))
+                .overlay(alignment: .top) { Rectangle().fill(Color.accentColor).frame(height: 2) }
+            }
+
+            HStack(spacing: 0) {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(0..<session.pageCount, id: \.self) { i in
+                            Button {
+                                session.goToPage(i)
+                            } label: {
+                                Text("\(i + 1)")
+                                    .font(.caption.weight(.semibold))
+                                    .frame(width: 44, height: 56)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(session.currentPageIndex == i ? Color.accentColor.opacity(0.25) : Color(nsColor: .controlBackgroundColor))
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .strokeBorder(session.currentPageIndex == i ? Color.accentColor : Color.primary.opacity(0.15))
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(8)
+                }
+                .frame(width: 64)
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+
+                Divider()
+                PDFCanvasView(session: session)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            HStack {
+                Text(session.status.isEmpty ? "Ready." : session.status)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if !session.lastClickDebug.isEmpty {
+                    Text(session.lastClickDebug)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+            }
+            .padding(8)
+        }
+        .onChange(of: session.status) { _, new in
+            statusMessage = new
+        }
+    }
+
+    private var toolHint: String {
+        switch session.tool {
+        case .editText:
+            return "Edit word: click letters on the page → blue bar appears → type new word → Apply. If nothing selects, page is image-only → use Edit text in screenshot."
+        case .addText:
+            return "Add text: click empty space to place a new text box."
+        case .highlight:
+            return "Highlight: click a word."
+        case .underline:
+            return "Underline: click a word."
+        case .strike:
+            return "Strike: click a word."
+        case .signature:
+            return "Sign: click where signature should go."
+        case .stamp:
+            return "Stamp: click to place stamp text."
+        case .screenshot:
+            return "Page shot: click opens image adjust. Prefer Edit text in screenshot for words."
+        case .select:
+            return "Select: drag to select text for copy. Switch to Edit word to change text."
         }
     }
 }
 
-/// Holds optional LivePDFSession for @StateObject compatibility.
+// MARK: - Session holder
+
 @MainActor
 final class PDFSessionHolder: ObservableObject {
     @Published var session: LivePDFSession?
+    private var cancellable: AnyCancellable?
+
+    func attach(_ newSession: LivePDFSession?) {
+        // Re-broadcast nested session changes so toolbars that read holder.session still refresh
+        if let newSession {
+            cancellable = newSession.objectWillChange.sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+        } else {
+            cancellable = nil
+        }
+        session = newSession
+    }
 }

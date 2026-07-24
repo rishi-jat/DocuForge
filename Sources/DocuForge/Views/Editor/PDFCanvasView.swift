@@ -2,7 +2,7 @@ import SwiftUI
 import PDFKit
 import AppKit
 
-/// Native PDFKit canvas — the PDF is shown and edited on-page.
+/// Native PDFKit canvas. Clicks are mapped to page coordinates for tools.
 struct PDFCanvasView: NSViewRepresentable {
     @ObservedObject var session: LivePDFSession
 
@@ -18,16 +18,15 @@ struct PDFCanvasView: NSViewRepresentable {
         view.backgroundColor = NSColor.windowBackgroundColor
         view.document = session.document
         view.delegate = context.coordinator
-        view.onPageClick = { [weak coordinator = context.coordinator] page, point in
-            Task { @MainActor in
-                coordinator?.session.handleClick(page: page, pointInPage: point)
-            }
-        }
+        view.minScaleFactor = 0.25
+        view.maxScaleFactor = 4.0
         context.coordinator.pdfView = view
+        context.coordinator.apply(session: session, to: view)
+
         NotificationCenter.default.addObserver(
             context.coordinator,
             selector: #selector(Coordinator.pageChanged(_:)),
-            name: Notification.Name.PDFViewPageChanged,
+            name: .PDFViewPageChanged,
             object: view
         )
         return view
@@ -38,21 +37,14 @@ struct PDFCanvasView: NSViewRepresentable {
         if pdfView.document !== session.document {
             pdfView.document = session.document
         }
-        // Only Select tool uses native PDF selection drag.
-        // All other tools intercept clicks for edit / annotate / screenshot.
-        pdfView.activeToolIsSelect = { [session] in
-            session.tool == .select
-        }
-        pdfView.onPageClick = { page, point in
-            Task { @MainActor in
-                session.handleClick(page: page, pointInPage: point)
-            }
-        }
+        context.coordinator.apply(session: session, to: pdfView)
+
         if let page = session.document.page(at: session.currentPageIndex),
            pdfView.currentPage != page {
             pdfView.go(to: page)
         }
-        // Force redraw when selection flash changes
+
+        _ = session.canvasRevision
         _ = session.selectionFlashToken
         pdfView.needsDisplay = true
     }
@@ -61,63 +53,88 @@ struct PDFCanvasView: NSViewRepresentable {
         NotificationCenter.default.removeObserver(coordinator)
     }
 
+    @MainActor
     final class Coordinator: NSObject, PDFViewDelegate {
         var session: LivePDFSession
-        weak var pdfView: PDFView?
+        weak var pdfView: ClickablePDFView?
 
         init(session: LivePDFSession) {
             self.session = session
         }
 
+        func apply(session: LivePDFSession, to view: ClickablePDFView) {
+            // Copy tool into a nonisolated flag so mouseDown (AppKit) can read it safely.
+            view.selectModeEnabled = (session.tool == .select)
+            view.onPageClick = { [weak self] page, point in
+                // mouseDown is on the main thread; hop explicitly for Swift 6 isolation.
+                Task { @MainActor in
+                    self?.session.handleClick(page: page, pointInPage: point)
+                }
+            }
+        }
+
         @objc func pageChanged(_ notification: Notification) {
-            let pdfView = self.pdfView
-            let session = self.session
-            DispatchQueue.main.async {
-                guard let pdfView,
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let pdfView = self.pdfView,
                       let page = pdfView.currentPage,
                       let doc = pdfView.document else { return }
                 let idx = doc.index(for: page)
-                if idx != NSNotFound, session.currentPageIndex != idx {
-                    session.currentPageIndex = idx
+                if idx != NSNotFound, self.session.currentPageIndex != idx {
+                    self.session.currentPageIndex = idx
                 }
             }
         }
     }
 }
 
-/// PDFView that maps clicks into page coordinates for tools.
+/// PDFView that always receives clicks for non-select tools.
 final class ClickablePDFView: PDFView {
-    var onPageClick: ((PDFPage, CGPoint) -> Void)?
-    var activeToolIsSelect: (() -> Bool)?
+    /// Set from MainActor update cycle.
+    nonisolated(unsafe) var selectModeEnabled: Bool = false
+    nonisolated(unsafe) var onPageClick: ((PDFPage, CGPoint) -> Void)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.makeFirstResponder(self)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if selectModeEnabled {
+            return super.hitTest(point)
+        }
+        return bounds.contains(point) ? self : super.hitTest(point)
+    }
 
     override func mouseDown(with event: NSEvent) {
-        let isSelect = activeToolIsSelect?() ?? true
-        if isSelect {
+        if selectModeEnabled {
             super.mouseDown(with: event)
             return
         }
-        let viewPoint = convert(event.locationInWindow, from: nil)
-        if let page = page(for: viewPoint, nearest: true) {
-            let pagePoint = convert(viewPoint, to: page)
-            onPageClick?(page, pagePoint)
+
+        let windowPoint = event.locationInWindow
+        let viewPoint = convert(windowPoint, from: nil)
+
+        guard let page = page(for: viewPoint, nearest: true) else {
+            super.mouseDown(with: event)
             return
         }
-        super.mouseDown(with: event)
+        let pagePoint = convert(viewPoint, to: page)
+        onPageClick?(page, pagePoint)
     }
 
-    override func mouseMoved(with event: NSEvent) {
-        super.mouseMoved(with: event)
-        let isSelect = activeToolIsSelect?() ?? true
-        if isSelect {
+    override func cursorUpdate(with event: NSEvent) {
+        if selectModeEnabled {
             NSCursor.arrow.set()
         } else {
-            NSCursor.iBeam.set()
+            NSCursor.crosshair.set()
         }
     }
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        let isSelect = activeToolIsSelect?() ?? true
-        addCursorRect(bounds, cursor: isSelect ? .arrow : .iBeam)
+        addCursorRect(bounds, cursor: selectModeEnabled ? .arrow : .crosshair)
     }
 }

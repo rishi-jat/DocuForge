@@ -17,6 +17,7 @@ final class AppModel: ObservableObject {
     let pdfEditor = PDFEditorService()
     let imageEditor = ImageEditorService()
     let textEditor = TextEditorService()
+    let screenshotText = ScreenshotTextEditorService()
 
     func revealInFinder(_ url: URL) {
         NSWorkspace.shared.activateFileViewerSelecting([url])
