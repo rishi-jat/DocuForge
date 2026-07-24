@@ -25,6 +25,11 @@ let package = Package(
             name: "DocuForgeVerify",
             dependencies: ["DocuForgeCore"],
             path: "Sources/DocuForgeVerify"
+        ),
+        .testTarget(
+            name: "DocuForgeTests",
+            dependencies: ["DocuForgeCore"],
+            path: "Tests/DocuForgeTests"
         )
     ]
 )
