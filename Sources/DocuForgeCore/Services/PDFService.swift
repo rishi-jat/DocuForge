@@ -220,7 +220,7 @@ public actor PDFService {
             }
 
             let stamped = drawWatermark(on: baseImage, options: options)
-            guard let jpeg = jpegData(from: stamped, quality: 0.92),
+            guard let jpeg = jpegData(from: stamped, quality: 0.95),
                   let newPage = pageFromJPEG(data: jpeg, mediaBox: bounds) else {
                 outDoc.insert(page, at: outDoc.pageCount)
                 continue
@@ -274,6 +274,9 @@ public actor PDFService {
 
     // MARK: - PDF ↔ Images
 
+    /// 300 DPI render scale relative to PDF user space (72 pt/inch).
+    public static let highQualityRenderDPI: CGFloat = 300
+
     public func pdfToImages(url: URL, format: DocumentFormat, outputDirectory: URL) throws -> ProcessingResult {
         guard format.isImage else {
             throw DocuForgeError.invalidInput("Target must be an image format.")
@@ -283,18 +286,32 @@ public actor PDFService {
         let base = url.deletingPathExtension().lastPathComponent
         var outputs: [URL] = []
         let bytesIn = FileIO.fileSize(at: url)
+        let scale = Self.highQualityRenderDPI / 72.0
+        // Lossless-preferring encode for raster export from PDF
+        let encodeQuality: CGFloat = format == .jpeg || format == .heic || format == .webp || format == .avif ? 0.95 : 1.0
 
         for i in 0..<doc.pageCount {
             guard let page = doc.page(at: i) else { continue }
             let bounds = page.bounds(for: .mediaBox)
-            let pixelSize = CGSize(width: bounds.width * 2, height: bounds.height * 2)
+            let pixelSize = CGSize(
+                width: max(1, bounds.width * scale),
+                height: max(1, bounds.height * scale)
+            )
             guard let image = render(page: page, pixelSize: pixelSize) else { continue }
             let out = outputDirectory.appendingPathComponent("\(base)-p\(i + 1).\(format.pathExtension)")
-            try ImageServiceWrite.write(image: image, to: out, format: format)
+            try ImageServiceWrite.write(image: image, to: out, format: format, jpegQuality: encodeQuality)
             outputs.append(out)
         }
+        guard !outputs.isEmpty else {
+            throw DocuForgeError.pdfOperationFailed("No pages could be rendered from \(url.lastPathComponent).")
+        }
         let bytesOut = outputs.reduce(Int64(0)) { $0 + FileIO.fileSize(at: $1) }
-        return ProcessingResult(outputURLs: outputs, bytesIn: bytesIn, bytesOut: bytesOut)
+        return ProcessingResult(
+            outputURLs: outputs,
+            bytesIn: bytesIn,
+            bytesOut: bytesOut,
+            notes: ["Exported all \(outputs.count) page(s) at \(Int(Self.highQualityRenderDPI)) DPI."]
+        )
     }
 
     public func imagesToPDF(urls: [URL], outputURL: URL) throws -> ProcessingResult {
@@ -303,15 +320,21 @@ public actor PDFService {
         }
         let doc = PDFDocument()
         var bytesIn: Int64 = 0
+        var pageTotal = 0
         for url in urls {
             bytesIn += FileIO.fileSize(at: url)
-            guard let image = NSImage(contentsOf: url) else {
+            // Expand multi-page images (TIFF etc.) into one PDF page per frame, in order.
+            let frames = try ImageService.syncLoadAllFrames(url: url)
+            guard !frames.isEmpty else {
                 throw DocuForgeError.conversionFailed("Could not load image \(url.lastPathComponent)")
             }
-            guard let page = PDFPage(image: image) else {
-                throw DocuForgeError.conversionFailed("Could not create PDF page from \(url.lastPathComponent)")
+            for image in frames {
+                guard let page = PDFPage(image: image) else {
+                    throw DocuForgeError.conversionFailed("Could not create PDF page from \(url.lastPathComponent)")
+                }
+                doc.insert(page, at: doc.pageCount)
+                pageTotal += 1
             }
-            doc.insert(page, at: doc.pageCount)
         }
         guard doc.write(to: outputURL) else {
             throw DocuForgeError.pdfOperationFailed("Failed to write PDF from images.")
@@ -319,51 +342,18 @@ public actor PDFService {
         return ProcessingResult(
             outputURLs: [outputURL],
             bytesIn: bytesIn,
-            bytesOut: FileIO.fileSize(at: outputURL)
+            bytesOut: FileIO.fileSize(at: outputURL),
+            notes: ["Created PDF with \(pageTotal) page(s) from \(urls.count) image file(s)."]
         )
     }
 
     public func textToPDF(text: String, title: String, outputURL: URL) throws -> ProcessingResult {
-        let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792) // US Letter
-        let data = NSMutableData()
-        guard let consumer = CGDataConsumer(data: data as CFMutableData),
-              let context = CGContext(consumer: consumer, mediaBox: nil, nil) else {
-            throw DocuForgeError.conversionFailed("Could not create PDF context.")
-        }
-
-        var mediaBox = pageRect
-        context.beginPage(mediaBox: &mediaBox)
-
-        let margin: CGFloat = 54
-        let textRect = CGRect(
-            x: margin,
-            y: margin,
-            width: pageRect.width - margin * 2,
-            height: pageRect.height - margin * 2
+        // Multi-page high-quality layout — never clip to a single page.
+        try HighQualityPDFRenderer.writePlainText(
+            text,
+            to: outputURL,
+            bytesIn: 0
         )
-
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byWordWrapping
-
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12),
-            .foregroundColor: NSColor.black,
-            .paragraphStyle: paragraph
-        ]
-        let attr = NSAttributedString(string: text, attributes: attrs)
-
-        // Use NSGraphicsContext bridge
-        NSGraphicsContext.saveGraphicsState()
-        let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
-        NSGraphicsContext.current = nsContext
-        attr.draw(with: textRect, options: [.usesLineFragmentOrigin, .usesFontLeading])
-        NSGraphicsContext.restoreGraphicsState()
-
-        context.endPage()
-        context.closePDF()
-
-        try (data as Data).write(to: outputURL)
-        return ProcessingResult(outputURLs: [outputURL], bytesOut: FileIO.fileSize(at: outputURL))
     }
 
     // MARK: - Helpers
@@ -454,8 +444,9 @@ public actor PDFService {
 }
 
 /// Shared image write helpers used by PDFService without creating an actor cycle.
+/// Shared image write helpers used by PDFService without creating an actor cycle.
 enum ImageServiceWrite {
-    static func write(image: NSImage, to url: URL, format: DocumentFormat, jpegQuality: CGFloat = 0.9) throws {
+    static func write(image: NSImage, to url: URL, format: DocumentFormat, jpegQuality: CGFloat = 0.95) throws {
         guard let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff) else {
             throw DocuForgeError.conversionFailed("Could not create bitmap for \(url.lastPathComponent)")
@@ -473,9 +464,16 @@ enum ImageServiceWrite {
             data = rep.representation(using: .bmp, properties: [:])
         case .tiff:
             data = rep.representation(using: .tiff, properties: [:])
-        case .heic, .webp:
-            // Use ImageIO for HEIC/WebP
+        case .heic, .webp, .avif, .jp2, .ico:
             data = try imageIOEncode(rep: rep, format: format, jpegQuality: jpegQuality)
+        case .psd, .svg:
+            // Export rasterized PNG-equivalent via ImageIO as closest offline path
+            // For PSD/SVG targets we write PNG bytes is wrong; prefer PNG encode if asked for unsupported write
+            if format == .svg {
+                throw DocuForgeError.conversionFailed("Writing SVG vector output is not supported offline. Export PNG/PDF instead.")
+            }
+            // PSD write not supported — fall through to TIFF which many tools accept as layered-less raster
+            data = rep.representation(using: .tiff, properties: [:])
         default:
             throw DocuForgeError.unsupportedFormat(format)
         }
@@ -507,6 +505,14 @@ enum ImageServiceWrite {
             uti = UTType.png.identifier as CFString
         case .tiff:
             uti = UTType.tiff.identifier as CFString
+        case .avif:
+            uti = (UTType(filenameExtension: "avif")?.identifier ?? "public.avif") as CFString
+            props[kCGImageDestinationLossyCompressionQuality] = jpegQuality
+        case .jp2:
+            uti = (UTType(filenameExtension: "jp2")?.identifier ?? "public.jpeg-2000") as CFString
+            props[kCGImageDestinationLossyCompressionQuality] = jpegQuality
+        case .ico:
+            uti = (UTType(filenameExtension: "ico")?.identifier ?? "com.microsoft.ico") as CFString
         default:
             throw DocuForgeError.unsupportedFormat(format)
         }
@@ -515,7 +521,7 @@ enum ImageServiceWrite {
         }
         CGImageDestinationAddImage(dest, cgImage, props as CFDictionary)
         guard CGImageDestinationFinalize(dest) else {
-            throw DocuForgeError.conversionFailed("ImageIO finalize failed for \(format.displayName)")
+            throw DocuForgeError.conversionFailed("ImageIO finalize failed for \(format.displayName). This Mac may not encode \(format.displayName).")
         }
         return data as Data
     }

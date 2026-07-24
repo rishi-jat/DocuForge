@@ -32,7 +32,8 @@ public actor OCRService {
         for i in 0..<doc.pageCount {
             guard let page = doc.page(at: i) else { continue }
             let bounds = page.bounds(for: .mediaBox)
-            let scale: CGFloat = 2.0
+            // 300 DPI equivalent for sharper OCR without downsampling source pages.
+            let scale: CGFloat = 300.0 / 72.0
             let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
             guard let cgImage = renderPage(page, size: size) else { continue }
             let result = try await recognize(cgImage: cgImage, languages: languages)
