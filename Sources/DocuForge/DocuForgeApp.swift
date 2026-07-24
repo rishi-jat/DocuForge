@@ -11,7 +11,7 @@ struct DocuForgeApp: App {
                     .symbolRenderingMode(.hierarchical)
                 Text("DocuForge")
                     .font(.largeTitle.weight(.bold))
-                Text("Core \(DocuForgeCore.version)")
+                Text("Domain models ready · \(ToolKind.allCases.count) tools planned")
                     .foregroundStyle(.secondary)
             }
             .frame(minWidth: 480, minHeight: 320)
