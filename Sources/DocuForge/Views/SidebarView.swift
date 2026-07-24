@@ -26,6 +26,7 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
         .safeAreaInset(edge: .bottom) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Start with Edit")

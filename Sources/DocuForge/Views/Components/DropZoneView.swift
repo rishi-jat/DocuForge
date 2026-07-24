@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 import DocuForgeCore
 
@@ -11,21 +12,25 @@ struct DropZoneView: View {
     let onDrop: ([URL]) -> Void
 
     @State private var isTargeted = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 16) {
             Image(systemName: systemImage)
-                .font(.system(size: 36, weight: .light))
+                .font(.system(size: 44, weight: .light))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(isTargeted ? Color.accentColor : .secondary)
+                .foregroundStyle(isTargeted ? Color.accentColor : Color.primary.opacity(0.75))
 
-            VStack(spacing: 4) {
+            VStack(spacing: 6) {
                 Text(title)
                     .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
                 Text(subtitle)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Button("Choose Files…") {
@@ -42,18 +47,21 @@ struct DropZoneView: View {
             .controlSize(.large)
         }
         .frame(maxWidth: .infinity)
-        .padding(36)
+        .frame(minHeight: 260)
+        .padding(32)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(isTargeted ? Color.accentColor.opacity(0.08) : Color(nsColor: .controlBackgroundColor))
+                .fill(fillColor)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(
-                    isTargeted ? Color.accentColor : Color.primary.opacity(0.08),
-                    style: StrokeStyle(lineWidth: isTargeted ? 2 : 1, dash: isTargeted ? [] : [8, 6])
+                    isTargeted ? Color.accentColor : borderColor,
+                    style: StrokeStyle(lineWidth: isTargeted ? 2.5 : 1.5, dash: isTargeted ? [] : [10, 7])
                 )
         )
+        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.35 : 0.06), radius: 12, y: 2)
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             Task {
                 let urls = await Self.resolveURLs(from: providers)
@@ -75,6 +83,22 @@ struct DropZoneView: View {
         .animation(.easeInOut(duration: 0.15), value: isTargeted)
     }
 
+    private var fillColor: Color {
+        if isTargeted {
+            return Color.accentColor.opacity(colorScheme == .dark ? 0.18 : 0.10)
+        }
+        // Elevated surface so drop zones never blend into the window in dark mode.
+        return colorScheme == .dark
+            ? Color(nsColor: .alternatingContentBackgroundColors.last ?? .controlBackgroundColor)
+            : Color(nsColor: .controlBackgroundColor)
+    }
+
+    private var borderColor: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.28)
+            : Color.primary.opacity(0.18)
+    }
+
     private static func resolveURLs(from providers: [NSItemProvider]) async -> [URL] {
         var urls: [URL] = []
         for provider in providers {
@@ -86,7 +110,6 @@ struct DropZoneView: View {
                 urls.append(url)
                 continue
             }
-            // Fallback: load as file representation
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 let url: URL? = await withCheckedContinuation { cont in
                     provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
@@ -107,5 +130,3 @@ struct DropZoneView: View {
         return urls
     }
 }
-
-import AppKit
