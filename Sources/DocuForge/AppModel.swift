@@ -14,6 +14,9 @@ final class AppModel: ObservableObject {
     let ocr = OCRService()
     let conversion = ConversionService()
     let batch = BatchProcessor()
+    let pdfEditor = PDFEditorService()
+    let imageEditor = ImageEditorService()
+    let textEditor = TextEditorService()
 
     func revealInFinder(_ url: URL) {
         NSWorkspace.shared.activateFileViewerSelecting([url])

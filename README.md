@@ -8,6 +8,7 @@ Built with **Swift**, **SwiftUI**, and first-party Apple frameworks. Processing 
 
 | Tool | What it does |
 |------|----------------|
+| **Edit** | In-app editor for PDFs, text docs, and images (pages, annotations, crop, adjustments) |
 | **Convert** | Broad format matrix (documents, slides, sheets, images, EPUB, archives) |
 | **Merge / Split** | PDF structure tools |
 | **Compress** | Re-encode PDF pages |
@@ -94,6 +95,16 @@ Outputs default to `~/Downloads/DocuForge/`.
 | EPUB | TXT / HTML / PDF | Text extract from spine; layout simplified |
 | ZIP | Extract / create | |
 | TAR / GZIP | Extract / list | |
+
+## Edit mode
+
+| Content | What you can edit | Save-back |
+|---------|-------------------|-----------|
+| **PDF** | Page order/rotate/delete/insert, crop box, highlight/underline/strike, text boxes, ink signature, stamps, watermarks | Native PDF via PDFKit |
+| **TXT / Markdown / CSV** | Full text | Original format |
+| **RTF** | Text content | RTF (styling simplified) |
+| **DOC / DOCX / ODT** | Text content via textutil | Original extension via textutil; layout/images not preserved |
+| **Images** | Crop, resize, brightness/contrast/saturation | PNG/JPEG/TIFF/HEIC/… when ImageIO encodes; SVG/PSD → PNG fallback |
 
 ## Formats that cannot be fully supported (and why)
 

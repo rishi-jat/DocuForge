@@ -139,6 +139,9 @@ struct Verify {
         print("\nMulti-page & quality checks:\n")
         await MultiPageChecks.run(temp: temp, check: check)
 
+        print("\nEdit mode checks:\n")
+        await EditChecks.run(temp: temp, check: check)
+
         let failed = failures.count
         print("\n" + (failed == 0 ? "All checks passed." : "\(failed) check(s) failed."))
         if failed != 0 { exit(1) }

@@ -35,6 +35,7 @@ struct DocuForgeApp: App {
 private extension ToolKind {
     var shortcutKey: KeyEquivalent {
         switch self {
+        case .edit: return "e"
         case .convert: return "c"
         case .merge: return "m"
         case .split: return "s"

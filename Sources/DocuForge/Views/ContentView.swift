@@ -19,6 +19,7 @@ struct ContentView: View {
     @ViewBuilder
     private var detail: some View {
         switch app.selectedTool {
+        case .edit: EditView()
         case .convert: ConvertView()
         case .merge: MergeView()
         case .split: SplitView()

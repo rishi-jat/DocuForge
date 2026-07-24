@@ -2,6 +2,7 @@ import Foundation
 
 /// Sidebar tools exposed by DocuForge.
 public enum ToolKind: String, CaseIterable, Identifiable, Sendable, Hashable {
+    case edit
     case convert
     case merge
     case split
@@ -16,6 +17,7 @@ public enum ToolKind: String, CaseIterable, Identifiable, Sendable, Hashable {
 
     public var title: String {
         switch self {
+        case .edit: return "Edit"
         case .convert: return "Convert"
         case .merge: return "Merge PDF"
         case .split: return "Split PDF"
@@ -30,6 +32,7 @@ public enum ToolKind: String, CaseIterable, Identifiable, Sendable, Hashable {
 
     public var subtitle: String {
         switch self {
+        case .edit: return "PDFs, text & images"
         case .convert: return "Formats & images"
         case .merge: return "Combine documents"
         case .split: return "Extract ranges"
@@ -44,6 +47,7 @@ public enum ToolKind: String, CaseIterable, Identifiable, Sendable, Hashable {
 
     public var systemImage: String {
         switch self {
+        case .edit: return "pencil.and.outline"
         case .convert: return "arrow.triangle.2.circlepath"
         case .merge: return "doc.on.doc"
         case .split: return "scissors"
@@ -58,6 +62,7 @@ public enum ToolKind: String, CaseIterable, Identifiable, Sendable, Hashable {
 
     public var section: ToolSection {
         switch self {
+        case .edit: return .edit
         case .convert, .ocr: return .transform
         case .merge, .split, .pages: return .structure
         case .compress, .protect, .watermark: return .secure
@@ -67,6 +72,7 @@ public enum ToolKind: String, CaseIterable, Identifiable, Sendable, Hashable {
 }
 
 public enum ToolSection: String, CaseIterable, Identifiable, Sendable {
+    case edit
     case transform
     case structure
     case secure
@@ -76,6 +82,7 @@ public enum ToolSection: String, CaseIterable, Identifiable, Sendable {
 
     public var title: String {
         switch self {
+        case .edit: return "Editor"
         case .transform: return "Transform"
         case .structure: return "Structure"
         case .secure: return "Secure & Polish"
