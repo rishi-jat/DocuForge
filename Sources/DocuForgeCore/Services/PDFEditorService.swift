@@ -355,6 +355,120 @@ public actor PDFEditorService {
         try page(id: id, index: pageIndex).bounds(for: .mediaBox)
     }
 
+
+    // MARK: - Content search / replace & screenshots
+
+    /// Count occurrences of `search` across extractable text on every page (order preserved).
+    public func countTextMatches(id: UUID, search: String, caseSensitive: Bool) throws -> Int {
+        guard !search.isEmpty else { return 0 }
+        let doc = try document(id)
+        var total = 0
+        for i in 0..<doc.pageCount {
+            guard let page = doc.page(at: i), let s = page.string else { continue }
+            total += SearchReplace.countMatches(in: s, search: search, caseSensitive: caseSensitive)
+        }
+        return total
+    }
+
+    /// Replace text across the document by rebuilding a multi-page text PDF.
+    /// Preserves reading order of extractable text. Complex visual layout may change —
+    /// preferred when the PDF is text-heavy (exports, reports). Returns notes about fidelity.
+    public func replaceAllText(
+        id: UUID,
+        search: String,
+        replace: String,
+        caseSensitive: Bool
+    ) throws -> (matchCount: Int, notes: [String]) {
+        let doc = try document(id)
+        var pageTexts: [String] = []
+        var matches = 0
+        for i in 0..<doc.pageCount {
+            let raw = doc.page(at: i)?.string ?? ""
+            let result = SearchReplace.replaceAll(
+                in: raw,
+                search: search,
+                replace: replace,
+                caseSensitive: caseSensitive
+            )
+            matches += result.replacedCount
+            pageTexts.append(result.output)
+        }
+        guard matches > 0 else {
+            return (0, ["No matches for “\(search)”."])
+        }
+        // Rebuild as multi-page PDF with page breaks between original pages
+        let combined = pageTexts.joined(separator: "\u{0c}")
+        let temp = FileIO.temporaryURL(prefix: "pdf-replace", ext: "pdf")
+        _ = try HighQualityPDFRenderer.writePlainText(combined, to: temp)
+        guard let newDoc = PDFDocument(url: temp) else {
+            throw DocuForgeError.pdfOperationFailed("Failed to rebuild PDF after replace.")
+        }
+        documents[id] = newDoc
+        dirty[id] = true
+        try? FileManager.default.removeItem(at: temp)
+        return (
+            matches,
+            [
+                "Replaced \(matches) occurrence(s).",
+                "Text-layer rebuild preserves wording and page order; original fonts/graphics may differ from a design tool like Pages."
+            ]
+        )
+    }
+
+    /// Replace an entire page with an image (e.g. edited screenshot).
+    public func replacePageWithImage(id: UUID, pageIndex: Int, image: NSImage) throws {
+        let doc = try document(id)
+        guard pageIndex >= 0, pageIndex < doc.pageCount else {
+            throw DocuForgeError.invalidInput("Invalid page index.")
+        }
+        guard let newPage = PDFPage(image: image) else {
+            throw DocuForgeError.conversionFailed("Could not create page from image.")
+        }
+        // Preserve approximate rotation of old page
+        if let old = doc.page(at: pageIndex) {
+            newPage.rotation = old.rotation
+        }
+        doc.removePage(at: pageIndex)
+        doc.insert(newPage, at: pageIndex)
+        dirty[id] = true
+    }
+
+    /// Insert clipboard/screenshot image as a new page after `pageIndex`.
+    public func insertScreenshotPage(id: UUID, after pageIndex: Int, image: NSImage) throws {
+        let doc = try document(id)
+        guard let newPage = PDFPage(image: image) else {
+            throw DocuForgeError.conversionFailed("Could not create page from screenshot.")
+        }
+        let at = min(max(0, pageIndex + 1), doc.pageCount)
+        doc.insert(newPage, at: at)
+        dirty[id] = true
+    }
+
+    /// Extract page as high-res PNG data for external screenshot editing.
+    public func exportPageImage(id: UUID, pageIndex: Int, dpi: CGFloat = 144) throws -> Data {
+        let page = try page(id: id, index: pageIndex)
+        let bounds = page.bounds(for: .mediaBox)
+        let scale = dpi / 72.0
+        let size = CGSize(width: max(1, bounds.width * scale), height: max(1, bounds.height * scale))
+        let image = NSImage(size: size)
+        image.lockFocus()
+        if let ctx = NSGraphicsContext.current?.cgContext {
+            ctx.setFillColor(NSColor.white.cgColor)
+            ctx.fill(CGRect(origin: .zero, size: size))
+            ctx.saveGState()
+            ctx.scaleBy(x: scale, y: scale)
+            page.draw(with: .mediaBox, to: ctx)
+            ctx.restoreGState()
+        }
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            throw DocuForgeError.conversionFailed("Page export failed.")
+        }
+        return png
+    }
+
     // MARK: - Helpers
 
     private func document(_ id: UUID) throws -> PDFDocument {

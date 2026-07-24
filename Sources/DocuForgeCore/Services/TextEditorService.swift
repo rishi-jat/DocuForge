@@ -159,4 +159,24 @@ public actor TextEditorService {
     public func isEditableTextFormat(_ format: DocumentFormat) -> Bool {
         [.txt, .markdown, .csv, .rtf, .html, .doc, .docx, .odt].contains(format)
     }
+
+    // MARK: - Search & replace
+
+    public func searchReplace(
+        text: String,
+        search: String,
+        replace: String,
+        caseSensitive: Bool
+    ) -> SearchReplace.Result {
+        SearchReplace.replaceAll(
+            in: text,
+            search: search,
+            replace: replace,
+            caseSensitive: caseSensitive
+        )
+    }
+
+    public func countMatches(text: String, search: String, caseSensitive: Bool) -> Int {
+        SearchReplace.countMatches(in: text, search: search, caseSensitive: caseSensitive)
+    }
 }

@@ -20,6 +20,9 @@ Built with **Swift**, **SwiftUI**, and first-party Apple frameworks. Processing 
 
 Outputs default to `~/Downloads/DocuForge/`.
 
+**Convert** always lists **Pages, Keynote, and Numbers** as targets. When those apps are installed and Automation is allowed, Office files can be imported with higher layout fidelity than a naïve open-in-Pages workflow.
+
+
 ## Architecture
 
 | Layer | Role |
@@ -100,8 +103,8 @@ Outputs default to `~/Downloads/DocuForge/`.
 
 | Content | What you can edit | Save-back |
 |---------|-------------------|-----------|
-| **PDF** | Page order/rotate/delete/insert, crop box, highlight/underline/strike, text boxes, ink signature, stamps, watermarks | Native PDF via PDFKit |
-| **TXT / Markdown / CSV** | Full text | Original format |
+| **PDF** | Find & replace all, page ops, annotations, paste/replace screenshots, crop, watermarks | Native PDF via PDFKit |
+| **TXT / Markdown / CSV** | Full text + find/replace all | Original format |
 | **RTF** | Text content | RTF (styling simplified) |
 | **DOC / DOCX / ODT** | Text content via textutil | Original extension via textutil; layout/images not preserved |
 | **Images** | Crop, resize, brightness/contrast/saturation | PNG/JPEG/TIFF/HEIC/… when ImageIO encodes; SVG/PSD → PNG fallback |

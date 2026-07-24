@@ -44,6 +44,23 @@ public actor IWorkAutomationService {
         AppKind.allCases.filter { isInstalled($0) }
     }
 
+    /// Open a foreign document (DOCX/PPTX/…) in an iWork app and export with high fidelity.
+    /// This avoids the “open in Pages and layout breaks” problem by letting Apple’s app
+    /// perform the import itself, then exporting to a stable target (PDF preferred).
+    public func importAndExport(
+        url: URL,
+        using app: AppKind,
+        to target: DocumentFormat,
+        outputDirectory: URL
+    ) throws -> ProcessingResult {
+        guard isInstalled(app) else {
+            throw DocuForgeError.conversionFailed(
+                "\(app.appName) is not installed. Install it from the Mac App Store for high-fidelity conversion."
+            )
+        }
+        return try runExport(app: app, inputURL: url, target: target, outputDirectory: outputDirectory)
+    }
+
     /// Export an iWork document to PDF (or other Apple-supported export) via AppleScript.
     public func export(
         url: URL,
@@ -59,7 +76,15 @@ public actor IWorkAutomationService {
                 "\(app.appName) is not installed. Install it from the App Store for high-fidelity export, or provide a file with an embedded QuickLook preview."
             )
         }
+        return try runExport(app: app, inputURL: url, target: target, outputDirectory: outputDirectory)
+    }
 
+    private func runExport(
+        app: AppKind,
+        inputURL: URL,
+        target: DocumentFormat,
+        outputDirectory: URL
+    ) throws -> ProcessingResult {
         let exportType: String
         let ext: String
         switch (app, target) {
@@ -67,8 +92,10 @@ public actor IWorkAutomationService {
             exportType = "PDF"; ext = "pdf"
         case (.pages, .docx):
             exportType = "Microsoft Word"; ext = "docx"
+        case (.pages, .pages):
+            // Save/export as Pages package
+            exportType = "Pages 09"; ext = "pages"
         case (.pages, .odt):
-            // Pages scripting uses different labels by version; PDF is most reliable.
             exportType = "PDF"; ext = "pdf"
         case (.pages, .rtf):
             exportType = "RTF"; ext = "rtf"
@@ -78,24 +105,29 @@ public actor IWorkAutomationService {
             exportType = "EPUB"; ext = "epub"
         case (.keynote, .pptx):
             exportType = "Microsoft PowerPoint"; ext = "pptx"
+        case (.keynote, .key):
+            exportType = "Keynote 09"; ext = "key"
         case (.keynote, .png):
-            exportType = "PDF"; ext = "pdf" // then rasterize later
+            exportType = "PDF"; ext = "pdf"
         case (.numbers, .xlsx):
             exportType = "Microsoft Excel"; ext = "xlsx"
+        case (.numbers, .numbers):
+            exportType = "Numbers 09"; ext = "numbers"
         case (.numbers, .csv):
             exportType = "CSV"; ext = "csv"
         default:
+            // High-fidelity default: PDF keeps layout intact for any consumer.
             exportType = "PDF"; ext = "pdf"
         }
 
-        let base = url.deletingPathExtension().lastPathComponent
+        let base = inputURL.deletingPathExtension().lastPathComponent
         let out = outputDirectory.appendingPathComponent("\(base).\(ext)")
         if FileManager.default.fileExists(atPath: out.path) {
             try FileManager.default.removeItem(at: out)
         }
 
         // Escape paths for AppleScript strings
-        let inPath = url.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let inPath = inputURL.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let outPath = out.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
 
         let script: String
@@ -153,7 +185,8 @@ public actor IWorkAutomationService {
             """
         }
 
-        try runAppleScript(script, timeout: 45)
+        // Keep timeout tight so failed automation falls through quickly to native engines.
+        try runAppleScript(script, timeout: 12)
 
         // If we fell back to PDF for a non-PDF target, note that
         var notes = ["Exported with \(app.appName) automation (\(exportType))."]
@@ -171,7 +204,7 @@ public actor IWorkAutomationService {
         // (ConversionService may re-enter for PDF→image).
         return ProcessingResult(
             outputURLs: [out],
-            bytesIn: FileIO.fileSize(at: url),
+            bytesIn: FileIO.fileSize(at: inputURL),
             bytesOut: FileIO.fileSize(at: out),
             notes: notes
         )

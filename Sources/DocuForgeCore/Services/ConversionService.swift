@@ -51,6 +51,16 @@ public actor ConversionService {
             return try copyFile(url: url, outputDirectory: outputDirectory)
         }
 
+        // High-fidelity iWork import/export when it clearly improves layout (Office ↔ iWork / PDF).
+        if let result = try await tryIWorkHighFidelity(
+            url: url,
+            source: source,
+            target: target,
+            outputDirectory: outputDirectory
+        ) {
+            return result
+        }
+
         // Archives
         if source.isArchive {
             if target == .zip && source != .zip {
@@ -235,6 +245,48 @@ public actor ConversionService {
     }
 
     // MARK: - Paths
+
+    /// Prefer iWork automation only when it is likely to succeed quickly:
+    /// - exporting *to* Pages/Keynote/Numbers, or
+    /// - converting presentations to PDF while Keynote is already running.
+    /// Word-processing → PDF stays on textutil/native so offline use is always reliable.
+    private func tryIWorkHighFidelity(
+        url: URL,
+        source: DocumentFormat,
+        target: DocumentFormat,
+        outputDirectory: URL
+    ) async throws -> ProcessingResult? {
+        if source.isIWork { return nil }
+
+        func attempt(_ app: IWorkAutomationService.AppKind, to target: DocumentFormat) async -> ProcessingResult? {
+            guard await iwork.isInstalled(app) else { return nil }
+            do {
+                return try await iwork.importAndExport(url: url, using: app, to: target, outputDirectory: outputDirectory)
+            } catch {
+                return nil
+            }
+        }
+
+        // Explicit export TO iWork formats (user picked Pages/Keynote/Numbers in Convert).
+        if target == .pages, let r = await attempt(.pages, to: .pages) { return r }
+        if target == .key, let r = await attempt(.keynote, to: .key) { return r }
+        if target == .numbers, let r = await attempt(.numbers, to: .numbers) { return r }
+
+        // Optional high-fidelity presentation → PDF only if Keynote is already running
+        // (avoids cold-launch hangs and permission dialogs during batch/offline use).
+        if target == .pdf, [.pptx, .ppt, .odp].contains(source), await iwork.isInstalled(.keynote) {
+            if isAppRunning(named: "Keynote"), let r = await attempt(.keynote, to: .pdf) {
+                return r
+            }
+        }
+        return nil
+    }
+
+    private func isAppRunning(named name: String) -> Bool {
+        NSWorkspace.shared.runningApplications.contains {
+            $0.localizedName == name || ($0.bundleIdentifier?.contains(name) ?? false)
+        }
+    }
 
     private func copyFile(url: URL, outputDirectory: URL) throws -> ProcessingResult {
         let out = outputDirectory.appendingPathComponent(url.lastPathComponent)

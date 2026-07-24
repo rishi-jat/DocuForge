@@ -28,9 +28,9 @@ struct SidebarView: View {
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Offline-first")
+                Text("Start with Edit")
                     .font(.caption.weight(.semibold))
-                Text("All processing stays on your Mac using PDFKit, Vision, and ImageIO.")
+                Text("Open a file to change text, pages, or screenshots. Convert uses Pages/Keynote when installed so layouts stay intact.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

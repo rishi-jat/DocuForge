@@ -5,7 +5,7 @@ import DocuForgeCore
 
 @MainActor
 final class AppModel: ObservableObject {
-    @Published var selectedTool: ToolKind = .convert
+    @Published var selectedTool: ToolKind = .edit
     @Published var recentOutputs: [URL] = []
     @Published var preferredOutputInDownloads: Bool = true
 

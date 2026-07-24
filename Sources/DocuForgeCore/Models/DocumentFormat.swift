@@ -192,34 +192,59 @@ public enum DocumentFormat: String, CaseIterable, Sendable, Identifiable, Hashab
 
     /// Sensible conversion targets shown in the Convert UI for this source.
     public var suggestedTargets: [DocumentFormat] {
+        switch self {
+        case .pages, .key, .numbers:
+            // Prefer high-fidelity PDF (via iWork automation when available).
+            return [.pdf, .png, .jpeg, .txt, .docx, .pptx, .xlsx]
+        case .pdf:
+            return [.png, .jpeg, .tiff, .txt, .html, .docx, .rtf, .pages]
+        case .pptx, .ppt, .odp:
+            return [.pdf, .key, .png, .jpeg, .txt]
+        case .docx, .doc, .odt, .rtf:
+            return [.pdf, .pages, .docx, .doc, .odt, .rtf, .txt, .html]
+        case .xlsx, .xls, .ods, .csv:
+            return [.pdf, .numbers, .csv, .xlsx, .txt, .html]
+        default:
+            break
+        }
         switch category {
         case .image:
             return [.png, .jpeg, .heic, .tiff, .gif, .webp, .bmp, .pdf, .ico]
         case .document:
-            if self == .pdf {
-                return [.png, .jpeg, .tiff, .txt, .html, .docx, .rtf]
-            }
-            return [.pdf, .txt, .html, .rtf, .docx, .odt, .doc]
+            return [.pdf, .pages, .txt, .html, .rtf, .docx, .odt, .doc]
         case .presentation:
-            return [.pdf, .txt, .png, .jpeg]
+            return [.pdf, .key, .pptx, .txt, .png, .jpeg]
         case .spreadsheet:
-            return [.pdf, .txt, .csv, .html]
+            return [.pdf, .numbers, .xlsx, .csv, .txt, .html]
         case .ebook:
-            return [.pdf, .txt, .html]
+            return [.pdf, .txt, .html, .epub]
         case .archive:
-            return [.zip] // extract is separate
+            return [.zip]
         case .other:
             return [.pdf, .txt]
         }
     }
 
-    /// Common export targets for the Convert picker (ordered).
+    /// Common export targets for the Convert picker (ordered) — always includes iWork.
     public static var commonTargets: [DocumentFormat] {
         [
-            .pdf, .docx, .doc, .odt, .rtf, .txt, .html, .markdown,
-            .png, .jpeg, .heic, .tiff, .webp, .gif, .bmp, .ico, .jp2,
-            .csv, .epub, .pptx, .xlsx
+            .pdf,
+            .pages, .key, .numbers,
+            .docx, .doc, .odt, .rtf, .txt, .html, .markdown,
+            .pptx, .ppt, .odp,
+            .xlsx, .xls, .ods, .csv,
+            .png, .jpeg, .heic, .tiff, .webp, .gif, .bmp, .ico, .jp2, .svg,
+            .epub, .zip
         ]
+    }
+
+    /// All formats users can pick as conversion outputs, grouped for UI.
+    public static var pickerTargetsByCategory: [(FormatCategory, [DocumentFormat])] {
+        let all = commonTargets
+        return FormatCategory.allCases.compactMap { cat in
+            let items = all.filter { $0.category == cat }
+            return items.isEmpty ? nil : (cat, items)
+        }
     }
 
     public static func detect(url: URL) -> DocumentFormat {

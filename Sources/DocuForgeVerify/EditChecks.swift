@@ -162,6 +162,82 @@ enum EditChecks {
             check("Image edit suite", false, error.localizedDescription)
         }
 
+
+        // ---- Search & replace ----
+        do {
+            let sample = "alpha beta alpha ALPHA alpha"
+            let ci = SearchReplace.replaceAll(in: sample, search: "alpha", replace: "γ", caseSensitive: false)
+            check("search/replace case-insensitive count", ci.replacedCount == 4, "count=\(ci.replacedCount)")
+            check("search/replace case-insensitive result", !ci.output.lowercased().contains("alpha"), ci.output)
+            let cs = SearchReplace.replaceAll(in: sample, search: "alpha", replace: "x", caseSensitive: true)
+            check("search/replace case-sensitive count", cs.replacedCount == 3, "count=\(cs.replacedCount)")
+        }
+
+        do {
+            let txt = temp.appendingPathComponent("sr.txt")
+            try "one two one two one".write(to: txt, atomically: true, encoding: .utf8)
+            var doc = try await textEditor.open(url: txt)
+            let result = await textEditor.searchReplace(text: doc.text, search: "one", replace: "1", caseSensitive: true)
+            doc.text = result.output
+            _ = try await textEditor.save(doc)
+            let reloaded = try String(contentsOf: txt, encoding: .utf8)
+            check("text editor replace-all save", reloaded == "1 two 1 two 1", reloaded)
+        } catch {
+            check("text editor replace-all save", false, error.localizedDescription)
+        }
+
+        do {
+            let pdfPath = temp.appendingPathComponent("sr.pdf")
+            let pageBlock = { (n: Int) in "PAGE \(n)\nThe word TOKEN appears here TOKEN again." }
+            let combined = [1, 2, 3].map(pageBlock).joined(separator: "\u{0c}")
+            _ = try HighQualityPDFRenderer.writePlainText(combined, to: pdfPath)
+            let opened = try await pdfEditor.open(url: pdfPath)
+            let matches = try await pdfEditor.countTextMatches(id: opened.id, search: "TOKEN", caseSensitive: true)
+            check("PDF count TOKEN matches", matches == 6, "matches=\(matches)")
+            let rep = try await pdfEditor.replaceAllText(id: opened.id, search: "TOKEN", replace: "VALUE", caseSensitive: true)
+            check("PDF replace all TOKEN", rep.matchCount == 6, "\(rep.notes)")
+            let out = temp.appendingPathComponent("sr-out.pdf")
+            _ = try await pdfEditor.saveAs(id: opened.id, url: out)
+            // Re-open and ensure TOKEN gone
+            let opened2 = try await pdfEditor.open(url: out)
+            let left = try await pdfEditor.countTextMatches(id: opened2.id, search: "TOKEN", caseSensitive: true)
+            check("PDF TOKEN removed after replace", left == 0, "left=\(left)")
+            await pdfEditor.close(id: opened.id)
+            await pdfEditor.close(id: opened2.id)
+        } catch {
+            check("PDF search/replace", false, error.localizedDescription)
+        }
+
+        do {
+            let pdf = try MultiPageChecks.makeLabeledMultiPagePDF(in: temp, pages: 2, name: "shot.pdf")
+            let opened = try await pdfEditor.open(url: pdf)
+            let shot = try MultiPageChecks.makeColorPNG(in: temp, name: "clip.png", label: "SC", color: .systemPurple)
+            guard let img = NSImage(contentsOf: shot) else { throw DocuForgeError.conversionFailed("img") }
+            try await pdfEditor.insertScreenshotPage(id: opened.id, after: 0, image: img)
+            var snap = try await pdfEditor.snapshot(id: opened.id)
+            check("PDF insert screenshot page", snap.pageCount == 3, "pages=\(snap.pageCount)")
+            try await pdfEditor.replacePageWithImage(id: opened.id, pageIndex: 1, image: img)
+            check("PDF replace page with image", true, "")
+            let pngData = try await pdfEditor.exportPageImage(id: opened.id, pageIndex: 0)
+            check("PDF export page image", pngData.count > 1000, "bytes=\(pngData.count)")
+            await pdfEditor.close(id: opened.id)
+        } catch {
+            check("PDF screenshot tools", false, error.localizedDescription)
+        }
+
+        // Convert targets include iWork
+        do {
+            let common = DocumentFormat.commonTargets
+            check("convert targets include Pages", common.contains(.pages), "")
+            check("convert targets include Keynote", common.contains(.key), "")
+            check("convert targets include Numbers", common.contains(.numbers), "")
+            check("convert targets include PPTX", common.contains(.pptx), "")
+            let pptxSuggest = DocumentFormat.pptx.suggestedTargets
+            check("PPTX suggests PDF and Keynote", pptxSuggest.contains(.pdf) && pptxSuggest.contains(.key), "\(pptxSuggest)")
+            let pagesSuggest = DocumentFormat.pages.suggestedTargets
+            check("Pages suggests PDF", pagesSuggest.contains(.pdf), "\(pagesSuggest)")
+        }
+
         // ---- Editable format matrix ----
         check("editable txt", await textEditor.isEditableTextFormat(.txt), "")
         check("editable docx", await textEditor.isEditableTextFormat(.docx), "")

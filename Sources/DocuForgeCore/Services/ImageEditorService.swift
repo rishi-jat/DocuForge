@@ -95,6 +95,17 @@ public actor ImageEditorService {
         format.isImage && format != .svg && format != .psd
     }
 
+    /// Read an image from the general pasteboard (screenshots, copy from Preview, etc.).
+    public func clipboardImage() -> NSImage? {
+        let pb = NSPasteboard.general
+        if let img = NSImage(pasteboard: pb) { return img }
+        if let data = pb.data(forType: .png) ?? pb.data(forType: .tiff),
+           let img = NSImage(data: data) {
+            return img
+        }
+        return nil
+    }
+
     private func ciImage(from image: NSImage) -> CIImage? {
         if let tiff = image.tiffRepresentation {
             return CIImage(data: tiff)
